@@ -361,12 +361,7 @@ func NewErrVideoFrameFailed(detail string) AppError {
 
 1. **`service.AppError`** → 移至 `common.AppError`，service 包引用 `common.AppError`
 2. **`common/errorcode.go`** 中的纯常量 → 替换为 `AppError` 值常量，保留旧常量做兼容过渡
-3. **`controller/handleError`** → 类型断言从 `*service.AppError` 改为 `common.AppError`（值类型，用 `errors.As`）
-4. **HTTP 状态码映射** → 新规则：按错误码首位数字判断
-   - `5xxx`（LLM 领域）→ HTTP 500
-   - `6xxx`（文件处理领域）→ HTTP 500
-   - 其他（`0xxx`/`1xxx`/`2xxx`/`3xxx`）→ HTTP 400
-   - 实现方式：`handleError` 中根据 `appErr.Code / 1000` 判断领域，`>= 5` 则返回 500
+4. **`controller/handleError`** → 类型断言从 `*service.AppError` 改为 `common.AppError`（值类型，用 `errors.As`），统一返回 HTTP 500
 
 ---
 

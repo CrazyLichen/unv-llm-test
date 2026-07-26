@@ -118,8 +118,8 @@ func (s *Scheduler) RecoverFromDB() {
 	}
 
 	for _, t := range tasks {
-		// 将 Analyzing 状态重置为 Pending（异常重启后需要重新执行）
-		if t.Status == "Analyzing" {
+		// 将 Analyzing 或 Failed 状态重置为 Pending（异常重启后或重试时需要重新执行）
+		if t.Status == "Analyzing" || t.Status == "Failed" {
 			s.repo.UpdateStatus(context.Background(), t.Id, "Pending")
 		}
 		s.Enqueue(t.Id)
@@ -170,7 +170,7 @@ func (s *Scheduler) executeTask(item *QueueTaskItem) {
 		return
 	}
 
-	// 更新状态为 Analyzing
+	// 更新状态为 Analyzing（清除可能存在的 FailReason）
 	if err := s.repo.UpdateStatus(item.Ctx, item.TaskID, "Analyzing"); err != nil {
 		slog.Error("更新任务状态失败", "taskId", item.TaskID, "error", err)
 		return
@@ -180,8 +180,26 @@ func (s *Scheduler) executeTask(item *QueueTaskItem) {
 	if task.Type == "Video" {
 		if err := s.extractFrames(item.Ctx, task); err != nil {
 			slog.Error("视频抽帧失败", "taskId", task.Id, "error", err)
-			// 抽帧失败不终止任务，已抽帧的继续检测
+			// 抽帧失败，检查是否有帧可用
+			pendingImages, _ := s.repo.ListPendingImages(item.Ctx, task.Id)
+			if len(pendingImages) == 0 {
+				// 没有任何帧可用，任务标记为 Failed
+				failReason := "视频抽帧失败: " + err.Error()
+				s.repo.UpdateStatusWithReason(item.Ctx, task.Id, "Failed", failReason)
+				slog.Info("任务失败（无可用帧）", "taskId", task.Id, "reason", failReason)
+				return
+			}
+			// 有部分帧可用，继续检测
 		}
+	}
+
+	// 检查是否有待检测素材（图片任务在 Create 时已创建，视频任务在 extractFrames 中创建）
+	pendingImages, _ := s.repo.ListPendingImages(item.Ctx, task.Id)
+	if len(pendingImages) == 0 {
+		failReason := "无待检测素材"
+		s.repo.UpdateStatusWithReason(item.Ctx, task.Id, "Failed", failReason)
+		slog.Info("任务失败（无待检测素材）", "taskId", task.Id)
+		return
 	}
 
 	// 逐个素材调用 LLM
@@ -276,6 +294,8 @@ func (s *Scheduler) detectImages(item *QueueTaskItem, task *model.Task) {
 	mc, err := s.mcRepo.GetByID(item.Ctx, task.ModelConfigId)
 	if err != nil || mc == nil {
 		slog.Error("加载模型配置失败", "taskId", task.Id, "modelConfigId", task.ModelConfigId, "error", err)
+		failReason := "模型配置不存在或加载失败"
+		s.repo.UpdateStatusWithReason(item.Ctx, task.Id, "Failed", failReason)
 		return
 	}
 

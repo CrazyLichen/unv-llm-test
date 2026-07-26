@@ -232,8 +232,8 @@ func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTa
 		slog.Info("暂停任务成功", "id", id, "prevStatus", task.Status)
 
 	case "Analyzing":
-		// 仅 Paused 状态可恢复
-		if task.Status != "Paused" {
+		// Paused 或 Failed 状态可恢复
+		if task.Status != "Paused" && task.Status != "Failed" {
 			slog.Warn("任务状态不允许恢复", "id", id, "currentStatus", task.Status)
 			return common.ErrTaskStatusInvalid
 		}
@@ -322,6 +322,7 @@ func (s *TaskService) toTaskItem(ctx context.Context, task *model.Task) (*model.
 		Prompt:             task.Prompt,
 		Target:             task.Target,
 		FrameInterval:      task.FrameInterval,
+		FailReason:         task.FailReason,
 		Progress:           progress,
 		CreatedAt:          task.CreatedAt,
 	}, nil

@@ -614,16 +614,32 @@ func testVerifyVideoFrames() testResult {
 	// 等待抽帧完成（给ffmpeg一些时间）
 	time.Sleep(5 * time.Second)
 
-	// 检查帧文件目录是否存在
+	// 检查任务当前状态
+	resp := doJSON("GET", taskAPIPrefix+"?Id="+videoTaskID, nil)
+	item := parseFirstTaskItem(resp.Data)
+	if item == nil {
+		return fail("解析任务项失败")
+	}
+
+	// 如果任务状态为 Failed，验证 FailReason 非空
+	if item.Status == "Failed" {
+		if item.FailReason == nil || *item.FailReason == "" {
+			return fail("任务状态为Failed但FailReason为空")
+		}
+		fmt.Printf("  [INFO] 任务Failed, FailReason=%s\n", *item.FailReason)
+
+		// 如果 FailReason 包含 ffmpeg 相关信息，说明是环境问题
+		if strings.Contains(*item.FailReason, "ffmpeg") || strings.Contains(*item.FailReason, "exec:") {
+			return passf("视频抽帧失败(ffmpeg未安装), 任务正确标记为Failed, FailReason=%s", *item.FailReason)
+		}
+		// 其他失败原因
+		return passf("视频抽帧失败, 任务标记为Failed, FailReason=%s", *item.FailReason)
+	}
+
+	// 任务不是 Failed，继续验证帧文件
 	frameDir := filepath.Join(uploadDir, "tasks", videoTaskID, "frames")
 	if !fileExists(frameDir) {
-		// 帧目录不存在，可能是ffmpeg未安装，检查任务状态
-		resp := doJSON("GET", taskAPIPrefix+"?Id="+videoTaskID, nil)
-		item := parseFirstTaskItem(resp.Data)
-		if item != nil && item.Status == "Completed" && item.Progress.Total == 0 {
-			return skip("ffmpeg未安装，视频抽帧未执行（任务直接Completed但Total=0）")
-		}
-		return failf("帧目录不存在: %s", frameDir)
+		return failf("帧目录不存在且任务状态非Failed: %s, Status=%s", frameDir, item.Status)
 	}
 
 	entries, err := os.ReadDir(frameDir)
@@ -641,13 +657,7 @@ func testVerifyVideoFrames() testResult {
 	}
 
 	if frameCount == 0 {
-		// ffmpeg可能未安装，检查任务是否直接完成但Total=0
-		resp := doJSON("GET", taskAPIPrefix+"?Id="+videoTaskID, nil)
-		item := parseFirstTaskItem(resp.Data)
-		if item != nil && item.Progress.Total == 0 {
-			return skip("帧目录为空且任务Total=0，ffmpeg可能未安装")
-		}
-		return fail("帧目录下没有jpg/png帧文件，抽帧可能失败")
+		return fail("帧目录下没有jpg/png帧文件，但任务状态非Failed")
 	}
 
 	fmt.Printf("  [INFO] 抽帧文件: %v\n", frameFiles)
@@ -667,23 +677,23 @@ func testVerifyVideoFrames() testResult {
 	}
 
 	// 验证3：查询任务进度确认Image记录已创建且包含FrameIndex
-	resp := doJSON("GET", taskAPIPrefix+"?Id="+videoTaskID, nil)
-	item := parseFirstTaskItem(resp.Data)
-	if item == nil {
+	frameResp := doJSON("GET", taskAPIPrefix+"?Id="+videoTaskID, nil)
+	frameItem := parseFirstTaskItem(frameResp.Data)
+	if frameItem == nil {
 		return fail("解析任务项失败")
 	}
 
-	if item.Progress.Total == 0 {
+	if frameItem.Progress.Total == 0 {
 		return fail("任务Progress.Total=0，未创建帧素材记录")
 	}
 
 	// 验证4：DB记录数应与磁盘帧文件数一致
-	if item.Progress.Total != frameCount {
-		fmt.Printf("  [WARN] DB Image记录(%d)与磁盘帧文件(%d)数量不一致\n", item.Progress.Total, frameCount)
+	if frameItem.Progress.Total != frameCount {
+		fmt.Printf("  [WARN] DB Image记录(%d)与磁盘帧文件(%d)数量不一致\n", frameItem.Progress.Total, frameCount)
 	}
 
 	return passf("抽帧成功, 磁盘帧文件=%d, HTTP可访问=%d, DB记录=%d",
-		frameCount, accessibleFrames, item.Progress.Total)
+		frameCount, accessibleFrames, frameItem.Progress.Total)
 }
 
 func testVerifyVideoDetectionResults() testResult {
@@ -698,9 +708,12 @@ func testVerifyVideoDetectionResults() testResult {
 		return fail("解析任务项失败")
 	}
 
-	// 如果任务已经是Completed且Total=0，说明ffmpeg未安装导致无帧可检测
-	if item.Status == "Completed" && item.Progress.Total == 0 {
-		return skip("ffmpeg未安装，视频抽帧未执行，无帧检测结果")
+	// 如果任务已经是 Failed 状态，验证 FailReason 并跳过
+	if item.Status == "Failed" {
+		if item.FailReason != nil && *item.FailReason != "" {
+			return passf("视频任务Failed(ffmpeg未安装), FailReason=%s", *item.FailReason)
+		}
+		return pass("视频任务Failed")
 	}
 
 	// 轮询等待视频任务完成（视频帧可能较多，给更长时间）

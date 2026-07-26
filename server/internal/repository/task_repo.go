@@ -77,11 +77,29 @@ func (r *TaskRepo) List(ctx context.Context, page, pageSize int, status string) 
 // UpdateStatus 更新任务状态
 func (r *TaskRepo) UpdateStatus(ctx context.Context, id string, status string) error {
 	result := r.db.WithContext(ctx).Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"status":     status,
-		"updated_at": common.NowFormatted(),
+		"status":      status,
+		"fail_reason": nil,
+		"updated_at":  common.NowFormatted(),
 	})
 	if result.Error != nil {
 		slog.Error("更新任务状态失败", "id", id, "error", result.Error)
+		return fmt.Errorf("更新任务状态失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// UpdateStatusWithReason 更新任务状态并设置失败原因
+func (r *TaskRepo) UpdateStatusWithReason(ctx context.Context, id string, status string, failReason string) error {
+	result := r.db.WithContext(ctx).Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"status":      status,
+		"fail_reason": failReason,
+		"updated_at":  common.NowFormatted(),
+	})
+	if result.Error != nil {
+		slog.Error("更新任务状态失败", "id", id, "status", status, "error", result.Error)
 		return fmt.Errorf("更新任务状态失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
@@ -132,7 +150,7 @@ func (r *TaskRepo) FindByModelConfigId(ctx context.Context, modelConfigId string
 // FindRecoverableTasks 查询可恢复的任务（Pending 或 Analyzing 状态）
 func (r *TaskRepo) FindRecoverableTasks(ctx context.Context) ([]model.Task, error) {
 	var tasks []model.Task
-	err := r.db.WithContext(ctx).Where("status IN ?", []string{"Pending", "Analyzing"}).Find(&tasks).Error
+	err := r.db.WithContext(ctx).Where("status IN ?", []string{"Pending", "Analyzing", "Failed"}).Find(&tasks).Error
 	if err != nil {
 		slog.Error("查询可恢复任务失败", "error", err)
 		return nil, fmt.Errorf("查询可恢复任务失败: %w", err)

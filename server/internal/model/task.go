@@ -12,7 +12,7 @@ type Task struct {
 	Name string `json:"Name" gorm:"column:name;not null"`
 	// Type 任务类型：Image / Video
 	Type string `json:"Type" gorm:"column:type;not null"`
-	// Status 任务状态：Pending / Analyzing / Paused / Completed
+	// Status 任务状态：Pending / Analyzing / Paused / Completed / Failed
 	Status string `json:"Status" gorm:"column:status;not null;default:Pending"`
 	// ModelConfigId 使用的模型配置 ID
 	ModelConfigId string `json:"ModelConfigId" gorm:"column:model_config_id;not null"`
@@ -24,6 +24,8 @@ type Task struct {
 	Target string `json:"Target" gorm:"column:target;not null"`
 	// FrameInterval 抽帧间隔（秒），Type=Video 时有值
 	FrameInterval *int32 `json:"FrameInterval" gorm:"column:frame_interval"`
+	// FailReason 任务失败原因
+	FailReason *string `json:"FailReason" gorm:"column:fail_reason"`
 	// CreatedAt 创建时间
 	CreatedAt string `json:"CreatedAt" gorm:"column:created_at;not null"`
 	// UpdatedAt 最后更新时间
@@ -104,7 +106,7 @@ type CreateTaskReq struct {
 
 // UpdateTaskReq 更新任务请求（暂停/恢复）
 type UpdateTaskReq struct {
-	// Status 任务状态：Paused / Analyzing
+	// Status 任务状态：Paused / Analyzing（Analyzing 用于恢复 Paused 或 Failed 的任务）
 	Status string `json:"Status" binding:"required,oneof=Paused Analyzing"`
 }
 
@@ -132,6 +134,8 @@ type TaskItem struct {
 	Target string `json:"Target"`
 	// FrameInterval 抽帧间隔（秒）
 	FrameInterval *int32 `json:"FrameInterval"`
+	// FailReason 任务失败原因
+	FailReason *string `json:"FailReason"`
 	// Progress 检测进度与统计
 	Progress TaskProgress `json:"Progress"`
 	// CreatedAt 创建时间

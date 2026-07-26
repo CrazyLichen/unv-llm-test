@@ -380,7 +380,35 @@ internal/
 
 ---
 
-## 7. 接口文档变更记录
+## 7. LLMClient 改造
+
+### 7.1 AnalyzeOption 间隔单位改为毫秒
+
+当前 `AnalyzeOption.Timeout` 为 `time.Duration`（纳秒级），使用不够直观。改为毫秒单位：
+
+```go
+// 改造前
+type AnalyzeOption struct {
+    MaxRetries int
+    Timeout    time.Duration  // 纳秒级，调用方需写 60*time.Second
+}
+
+// 改造后
+type AnalyzeOption struct {
+    MaxRetries int
+    TimeoutMs  int  // 毫秒，0 表示使用默认值（60000ms）
+}
+```
+
+配套修改：
+
+- `WithTimeout(d time.Duration)` → `WithTimeoutMs(ms int)`
+- `mergeOptions` 中默认值从 `defaultTimeout`(60s) 改为 `60000`（毫秒）
+- `client.go` 中 `option.WithRequestTimeout(opt.Timeout)` → `option.WithRequestTimeout(time.Duration(opt.TimeoutMs) * time.Millisecond)`
+
+---
+
+## 8. 接口文档变更记录
 
 ### Box 结构变更
 
@@ -398,7 +426,7 @@ LLM 返回的 `bbox_2d: [x1, y1, x2, y2]`，值为 0-1000 归一化坐标，直�
 
 ---
 
-## 8. 错误处理
+## 9. 错误处理
 
 | 场景 | 处理方式 |
 |------|----------|

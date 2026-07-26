@@ -112,8 +112,13 @@ func (r *MaterialLibraryRepo) Delete(ctx context.Context, id string) error {
 
 // HasRelatedTasks 检查素材库是否已关联任务
 func (r *MaterialLibraryRepo) HasRelatedTasks(ctx context.Context, libraryId string) (bool, error) {
-	// tasks 表尚未创建，返回 false
-	return false, nil
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Task{}).Where("material_library_id = ?", libraryId).Count(&count).Error
+	if err != nil {
+		slog.Error("检查素材库关联任务失败", "libraryId", libraryId, "error", err)
+		return false, fmt.Errorf("检查素材库关联任务失败: %w", err)
+	}
+	return count > 0, nil
 }
 
 // ──────────────────────────── 素材文件 ────────────────────────────

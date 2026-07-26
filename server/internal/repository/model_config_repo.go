@@ -130,11 +130,15 @@ func (r *ModelConfigRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// HasRelatedTasks 检查是否有关联任务（tasks 表尚未创建，预留接口）
+// HasRelatedTasks 检查是否有关联任务
 func (r *ModelConfigRepo) HasRelatedTasks(ctx context.Context, modelConfigId string) (bool, error) {
-	// tasks 表尚未创建，返回 false
-	// 后续创建 tasks 表后实现：db.Where("model_config_id = ?", modelConfigId).Count(...)
-	return false, nil
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Task{}).Where("model_config_id = ?", modelConfigId).Count(&count).Error
+	if err != nil {
+		slog.Error("检查模型配置关联任务失败", "modelConfigId", modelConfigId, "error", err)
+		return false, fmt.Errorf("检查模型配置关联任务失败: %w", err)
+	}
+	return count > 0, nil
 }
 
 // ──────────────────────────── 非导出函数 ────────────────────────────

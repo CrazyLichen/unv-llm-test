@@ -42,6 +42,9 @@ func SetupRouter(r *gin.Engine, mcCtrl *ModelConfigController, mlCtrl *MaterialL
 			tasks.GET("", taskCtrl.List)
 			tasks.DELETE("/:id", taskCtrl.Delete)
 			tasks.PUT("/:id", taskCtrl.Update)
+			tasks.GET("/:id/images", taskCtrl.ListImages)
+			tasks.POST("/:id/images", taskCtrl.UploadImage)
+			tasks.PUT("/:id/images/:imageId", taskCtrl.UpdateCorrection)
 		}
 	}
 }

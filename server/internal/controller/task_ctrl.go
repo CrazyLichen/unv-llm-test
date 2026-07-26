@@ -123,3 +123,92 @@ func (ctrl *TaskController) Update(c *gin.Context) {
 
 	common.OK(c, nil)
 }
+
+// ListImages 获取任务分析结果列表
+func (ctrl *TaskController) ListImages(c *gin.Context) {
+	id := c.Param("id")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id)
+
+	// 按 ImageId 精确查询
+	if imageId := c.Query("ImageId"); imageId != "" {
+		item, total, err := ctrl.svc.ListImages(c.Request.Context(), id, imageId, 1, 1, "", "")
+		if err != nil {
+			handleError(c, err)
+			return
+		}
+		common.OK(c, common.PageData{
+			Total:    total,
+			Page:     1,
+			PageSize: 1,
+			Items:    item,
+		})
+		return
+	}
+
+	// 分页查询
+	page, _ := strconv.Atoi(c.DefaultQuery("Page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("PageSize", "24"))
+	status := c.Query("Status")
+	correction := c.Query("Correction")
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 24
+	}
+
+	items, total, err := ctrl.svc.ListImages(c.Request.Context(), id, "", page, pageSize, status, correction)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+
+	common.OK(c, common.PageData{
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		Items:    items,
+	})
+}
+
+// UploadImage 补录漏报照片
+func (ctrl *TaskController) UploadImage(c *gin.Context) {
+	id := c.Param("id")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id)
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		slog.Warn("读取上传文件失败", "id", id, "error", err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: 未选择文件")
+		return
+	}
+
+	if err := ctrl.svc.UploadMissedPhoto(c.Request.Context(), id, file); err != nil {
+		handleError(c, err)
+		return
+	}
+
+	common.OK(c, nil)
+}
+
+// UpdateCorrection 标记素材误报/恢复
+func (ctrl *TaskController) UpdateCorrection(c *gin.Context) {
+	id := c.Param("id")
+	imageId := c.Param("imageId")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id, "imageId", imageId)
+
+	var req model.UpdateCorrectionReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
+		return
+	}
+
+	if err := ctrl.svc.MarkCorrection(c.Request.Context(), id, imageId, req.Correction); err != nil {
+		handleError(c, err)
+		return
+	}
+
+	common.OK(c, nil)
+}

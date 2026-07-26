@@ -7,7 +7,7 @@ import (
 // ──────────────────────────── 导出函数 ────────────────────────────
 
 // SetupRouter 注册所有路由
-func SetupRouter(r *gin.Engine, mcCtrl *ModelConfigController, mlCtrl *MaterialLibraryController, uploadDir string) {
+func SetupRouter(r *gin.Engine, mcCtrl *ModelConfigController, mlCtrl *MaterialLibraryController, taskCtrl *TaskController, uploadDir string) {
 	// 静态文件服务
 	r.Static("/uploads", uploadDir)
 
@@ -34,6 +34,14 @@ func SetupRouter(r *gin.Engine, mcCtrl *ModelConfigController, mlCtrl *MaterialL
 			ml.POST("/:id/videos/complete", mlCtrl.CompleteVideoUpload)
 			ml.GET("/:id/files", mlCtrl.ListFiles)
 			ml.DELETE("/:id/files/:fileId", mlCtrl.DeleteFile)
+		}
+
+		tasks := api.Group("/tasks")
+		{
+			tasks.POST("", taskCtrl.Create)
+			tasks.GET("", taskCtrl.List)
+			tasks.DELETE("/:id", taskCtrl.Delete)
+			tasks.PUT("/:id", taskCtrl.Update)
 		}
 	}
 }

@@ -325,18 +325,21 @@ func (s *TaskService) UploadMissedPhoto(ctx context.Context, taskId string, file
 	fullPath := filepath.Join(frameDir, imgId+ext)
 	src, err := file.Open()
 	if err != nil {
+		os.RemoveAll(frameDir)
 		return common.NewErrFileUploadFailed("打开上传文件失败")
 	}
 	defer src.Close()
 
 	dst, err := os.Create(fullPath)
 	if err != nil {
+		os.RemoveAll(frameDir)
 		return common.NewErrFileUploadFailed("创建目标文件失败")
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
 		os.Remove(fullPath)
+		os.Remove(frameDir) // 目录为空时删除
 		return common.NewErrFileUploadFailed("写入文件失败")
 	}
 
@@ -353,6 +356,7 @@ func (s *TaskService) UploadMissedPhoto(ctx context.Context, taskId string, file
 
 	if err := s.repo.CreateImage(ctx, img); err != nil {
 		os.Remove(fullPath)
+		os.Remove(frameDir) // 目录为空时删除
 		return err
 	}
 

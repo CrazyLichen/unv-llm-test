@@ -628,6 +628,7 @@ func (s *MaterialLibraryService) mergeChunksAsync(mf *model.MaterialFile) {
 			"upload_status": "Failed",
 			"fail_reason":   failReason,
 		})
+		os.RemoveAll(chunkDir)
 		slog.Error("视频合并失败", "fileId", mf.Id, "error", err)
 		return
 	}
@@ -640,6 +641,7 @@ func (s *MaterialLibraryService) mergeChunksAsync(mf *model.MaterialFile) {
 			"upload_status": "Failed",
 			"fail_reason":   failReason,
 		})
+		os.RemoveAll(chunkDir)
 		slog.Error("视频合并失败", "fileId", mf.Id, "error", err)
 		return
 	}
@@ -657,6 +659,7 @@ func (s *MaterialLibraryService) mergeChunksAsync(mf *model.MaterialFile) {
 		if err != nil {
 			dst.Close()
 			os.Remove(targetPath)
+			os.RemoveAll(chunkDir)
 			failReason := fmt.Sprintf("打开分片 %d 失败: %s", i, err.Error())
 			s.repo.UpdateFile(ctx, mf.Id, map[string]interface{}{
 				"upload_status": "Failed",
@@ -669,6 +672,7 @@ func (s *MaterialLibraryService) mergeChunksAsync(mf *model.MaterialFile) {
 			chunkFile.Close()
 			dst.Close()
 			os.Remove(targetPath)
+			os.RemoveAll(chunkDir)
 			failReason := fmt.Sprintf("写入分片 %d 失败: %s", i, err.Error())
 			s.repo.UpdateFile(ctx, mf.Id, map[string]interface{}{
 				"upload_status": "Failed",

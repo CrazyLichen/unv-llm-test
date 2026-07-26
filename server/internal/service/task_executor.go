@@ -210,7 +210,7 @@ func (s *Scheduler) executeTask(item *QueueTaskItem) {
 }
 
 // extractFrames 视频抽帧并创建 Image 记录
-func (s *Scheduler) extractFrames(ctx context.Context, task *model.Task) error {
+func (s *Scheduler) extractFrames(ctx context.Context, task *model.Task) (retErr error) {
 	// 查找素材库下的视频文件
 	files, _, err := s.mlRepo.ListFiles(ctx, task.MaterialLibraryId, 1, 10, "Completed")
 	if err != nil {
@@ -229,6 +229,12 @@ func (s *Scheduler) extractFrames(ctx context.Context, task *model.Task) error {
 	if err := os.MkdirAll(frameDir, 0755); err != nil {
 		return fmt.Errorf("创建帧目录失败: %w", err)
 	}
+	// 抽帧失败时清理帧目录，避免孤立文件残留
+	defer func() {
+		if retErr != nil {
+			os.RemoveAll(frameDir)
+		}
+	}()
 
 	// 检查 ctx 是否已取消
 	if ctx.Err() != nil {

@@ -39,7 +39,7 @@ func InitDB(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	sqlDB.SetMaxOpenConns(1)
 
 	// 自动迁移表结构
-	if err := db.AutoMigrate(&model.ModelConfig{}, &model.MaterialLibrary{}, &model.MaterialFile{}); err != nil {
+	if err := db.AutoMigrate(&model.ModelConfig{}, &model.MaterialLibrary{}, &model.MaterialFile{}, &model.Task{}, &model.Image{}); err != nil {
 		return nil, fmt.Errorf("自动迁移表结构失败: %w", err)
 	}
 

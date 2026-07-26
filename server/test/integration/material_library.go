@@ -37,7 +37,7 @@ func getMaterialLibraryTests() []testCase {
 		{"图片上传与验证", "验证图片文件存在于磁盘", "检查每个上传的图片文件在磁盘上是否存在且大小一致", "所有文件存在且磁盘大小==记录大小", testVerifyImageFilesOnDisk},
 		{"图片上传与验证", "验证数据库记录与磁盘一致", "对比数据库记录数与磁盘文件数", "数据库记录数==磁盘文件数，且每条记录的StoragePath对应文件存在", testVerifyDbMatchesDisk},
 		{"图片上传与验证", "查询素材文件列表（含进度）", "查询文件列表，验证已完成文件进度为100%", "所有Completed文件Progress=1.0", testListFiles},
-		{"图片上传与验证", "通过静态文件服务访问图片", "通过HTTP访问上传图片的静态URL", "HTTP 200，返回内容大小与记录一致", testStaticFileAccess},
+		{"图片上传与验证", "通过静态文件服务访问图片", "先查询素材文件列表获取AccessUrl，再逐个访问所有已完成图片", "所有Completed文件HTTP 200，返回内容大小与记录一致", testStaticFileAccess},
 		{"图片上传与验证", "素材库统计信息验证", "查询素材库统计，验证FileCount和TotalSize", "FileCount==实际上传数，TotalSize==实际文件总大小", testLibraryStats},
 
 		// 删除行为验证
@@ -245,24 +245,47 @@ func testStaticFileAccess() testResult {
 		return skip("没有文件可访问")
 	}
 
-	accessUrl := uploadedFiles[0].AccessUrl
-	fullURL := baseURL + accessUrl
-	fmt.Printf("  >> GET %s\n", fullURL)
-
-	resp, err := httpGetFull(fullURL)
-	if err != nil {
-		return failf("请求失败: %s", err)
+	// 通过查询素材文件列表接口获取文件信息，模拟实际业务流程
+	resp := doJSON("GET", apiPrefix+"/"+imageLibID+"/files?Page=1&PageSize=100", nil)
+	if resp.ErrorCode != 0 {
+		return failf("查询文件列表失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 
-	if resp.statusCode != 200 {
-		return failf("HTTP状态码=%d, 期望=200", resp.statusCode)
+	fileItems, _ := parsePageToFiles(resp.Data)
+	if len(fileItems) == 0 {
+		return fail("查询文件列表为空")
 	}
 
-	expectedSize := uploadedFiles[0].FileSize
-	if int64(len(resp.body)) != expectedSize {
-		return failf("返回内容大小=%d, 期望=%d", len(resp.body), expectedSize)
+	// 逐个访问所有已完成文件的 AccessUrl，验证图片数据可访问
+	accessible := 0
+	var failures []string
+	for _, f := range fileItems {
+		if f.UploadStatus != "Completed" {
+			continue
+		}
+		fullURL := baseURL + f.AccessUrl
+		fmt.Printf("  >> GET %s\n", fullURL)
+
+		httpResp, err := httpGetFull(fullURL)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: 请求失败(%s)", f.FileName, err))
+			continue
+		}
+		if httpResp.statusCode != 200 {
+			failures = append(failures, fmt.Sprintf("%s: HTTP %d", f.FileName, httpResp.statusCode))
+			continue
+		}
+		if int64(len(httpResp.body)) != f.FileSize {
+			failures = append(failures, fmt.Sprintf("%s: 大小不一致(返回%d!=记录%d)", f.FileName, len(httpResp.body), f.FileSize))
+			continue
+		}
+		accessible++
 	}
-	return passf("HTTP 200, 内容大小=%d, 与记录一致", expectedSize)
+
+	if len(failures) > 0 {
+		return failf("%d/%d个文件访问失败: %s", len(failures), len(fileItems), strings.Join(failures, "; "))
+	}
+	return passf("所有%d个Completed文件通过AccessUrl可访问且数据完整", accessible)
 }
 
 func testLibraryStats() testResult {

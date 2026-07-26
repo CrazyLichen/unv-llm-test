@@ -49,6 +49,7 @@ func getMaterialLibraryTests() []testCase {
 		{"视频分片上传", "验证视频合并后无残留chunk", "检查上传目录下是否残留chunks临时目录", "无chunks目录残留", testVerifyNoChunkResidue},
 		{"视频分片上传", "视频断点续传", "初始化上传后上传一个分片，再次初始化相同文件", "返回相同的UploadId，实现断点续传", testVideoResumableUpload},
 		{"视频分片上传", "同名已完成视频-init报错", "上传完整视频后再对同名文件init", "返回非零ErrorCode，提示同名文件已存在", testVideoSameNameReject},
+		{"视频分片上传", "不完整分片合并失败后chunk清理", "上传全部分片后删除一个分片文件，触发合并失败，验证chunk目录被清理", "文件状态=Failed，chunks目录不存在", testIncompleteChunkMergeCleanup},
 
 		// 异常场景
 		{"异常场景", "类型不匹配校验", "向视频库上传图片、向图片库上传视频", "两种情况均被拒绝，ErrorMsg包含'类型不匹配'", testTypeMismatch},
@@ -658,4 +659,111 @@ func testTypeMismatch() testResult {
 		return failf("部分场景未被拒绝: %s", strings.Join(details, "; "))
 	}
 	return passf("两种类型不匹配场景均被拒绝: %s", strings.Join(details, "; "))
+}
+
+// ──────────────────────────── 分片合并失败后chunk清理验证 ────────────────────────────
+
+func testIncompleteChunkMergeCleanup() testResult {
+	if videoLibID == "" {
+		return skip("没有已创建的视频素材库")
+	}
+
+	// 1. 初始化合成视频上传（3个分片）
+	initResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/init", map[string]interface{}{
+		"FileName":  "chunk_fail_test.mp4",
+		"FileSize":  300,
+		"ChunkSize": 100,
+	})
+	if initResp.ErrorCode != 0 {
+		return failf("初始化失败: ErrorCode=%d, ErrorMsg=%s", initResp.ErrorCode, initResp.ErrorMsg)
+	}
+
+	var initResult model.InitVideoUploadResp
+	json.Unmarshal(initResp.Data, &initResult)
+
+	// 2. 上传所有3个分片
+	for i := int32(0); i < initResult.ChunkCount; i++ {
+		chunkData := make([]byte, 100)
+		for j := range chunkData {
+			chunkData[j] = byte('A' + int(i))
+		}
+		chunkResp := doChunkUpload(apiPrefix+"/"+videoLibID+"/videos/chunk", initResult.UploadId, i, chunkData)
+		if chunkResp.ErrorCode != 0 {
+			return failf("分片%d上传失败: %s", i, chunkResp.ErrorMsg)
+		}
+		fmt.Printf("  [OK] 分片 %d/%d 上传成功\n", i+1, initResult.ChunkCount)
+	}
+
+	// 3. 从磁盘找到分片文件，提取 fileId
+	chunkDir := filepath.Join(uploadDir, "videos", videoLibID, "chunks")
+	entries, err := os.ReadDir(chunkDir)
+	if err != nil {
+		return failf("读取chunks目录失败: %s", err)
+	}
+
+	// 从 .part.0 文件名中提取 fileId
+	var fileID string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".part.0") {
+			fileID = strings.TrimSuffix(e.Name(), ".part.0")
+			break
+		}
+	}
+	if fileID == "" {
+		return fail("未找到分片文件，无法提取fileId")
+	}
+
+	// 4. 从磁盘删除分片文件 .part.1（触发合并时 os.Open 失败）
+	chunk1Path := filepath.Join(chunkDir, fileID+".part.1")
+	if !fileExists(chunk1Path) {
+		return failf("分片文件不存在: %s", chunk1Path)
+	}
+	if err := os.Remove(chunk1Path); err != nil {
+		return failf("删除分片文件失败: %s", err)
+	}
+	fmt.Printf("  [INFO] 已删除分片文件: %s\n", chunk1Path)
+
+	// 5. 调用 complete 接口（API校验通过，因为 UploadedChunks=3=TotalChunks）
+	completeResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/complete", map[string]interface{}{
+		"UploadId": initResult.UploadId,
+	})
+	if completeResp.ErrorCode != 0 {
+		return failf("完成上传失败: ErrorCode=%d, ErrorMsg=%s", completeResp.ErrorCode, completeResp.ErrorMsg)
+	}
+
+	// 6. 等待异步合并失败（轮询文件列表直到 UploadStatus="Failed"）
+	fmt.Println("  [INFO] 等待异步合并失败...")
+	maxWait := 10
+	for i := 0; i < maxWait; i++ {
+		filesResp := doJSON("GET", apiPrefix+"/"+videoLibID+"/files?Page=1&PageSize=20", nil)
+		fileItems, _ := parsePageToFiles(filesResp.Data)
+		for _, f := range fileItems {
+			if f.FileName == "chunk_fail_test.mp4" {
+				if f.UploadStatus == "Failed" {
+					// 7. 验证 chunks 目录已被清理
+					if fileExists(chunkDir) {
+						// 清理失败的文件记录
+						doJSON("DELETE", apiPrefix+"/"+videoLibID+"/files/"+fileID, nil)
+						return failf("合并失败后chunks目录未被清理: %s", chunkDir)
+					}
+
+					// 8. 清理失败的文件记录
+					doJSON("DELETE", apiPrefix+"/"+videoLibID+"/files/"+fileID, nil)
+
+					return passf("合并失败后chunks目录已被正确清理, 文件状态=Failed")
+				}
+				if f.UploadStatus == "Completed" {
+					// 不应该成功，删除分片后合并应失败
+					doJSON("DELETE", apiPrefix+"/"+videoLibID+"/files/"+fileID, nil)
+					return fail("删除分片文件后合并不应该成功")
+				}
+				break
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	// 超时清理
+	doJSON("DELETE", apiPrefix+"/"+videoLibID+"/files/"+fileID, nil)
+	return failf("轮询超时(10s)，文件合并状态未变为Failed")
 }

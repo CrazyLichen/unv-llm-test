@@ -560,6 +560,18 @@ func hasChunkDirs(dir string) []string {
 	return chunkDirs
 }
 
+// hasFrameDirs 检查是否有残留的 frames 目录
+func hasFrameDirs(dir string) []string {
+	var frameDirs []string
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && info.Name() == "frames" {
+			frameDirs = append(frameDirs, path)
+		}
+		return nil
+	})
+	return frameDirs
+}
+
 // parsePageItems 从 PageData 中解析 Items 为目标类型
 func parsePageItems(data json.RawMessage, target interface{}) error {
 	var pageData common.PageData

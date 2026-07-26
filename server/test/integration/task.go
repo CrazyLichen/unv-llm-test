@@ -22,6 +22,8 @@ var (
 	videoTaskID        string
 	missedPhotoImageID string
 	correctionImageID  string
+	emptyVideoLibID    string // 空视频素材库ID（用于触发抽帧失败）
+	failedVideoTaskID  string // 抽帧失败的视频任务ID
 )
 
 // 占道经营检测提示词
@@ -124,6 +126,11 @@ func getTaskTests() []testCase {
 		// 异常场景
 		{"任务异常场景", "类型不匹配校验", "使用图片素材库创建Video任务", "返回非零ErrorCode，提示类型不匹配", testTaskTypeMismatch},
 		{"任务异常场景", "素材库可重复绑定任务", "使用已绑定任务的素材库创建新任务，验证允许重复绑定", "创建成功，ErrorCode=0，新任务ID不同于已有任务", testTaskMaterialLibRebind},
+
+		// 临时目录清理验证
+		{"临时目录清理验证", "视频抽帧失败后帧目录清理", "用空视频素材库创建Video任务，验证extractFrames失败后帧目录被清理", "任务Failed，帧目录不存在", testFailedVideoTaskFrameCleanup},
+		{"临时目录清理验证", "补录照片帧目录验证", "验证补录漏报照片后帧目录存在且包含文件（失败路径需单元测试覆盖）", "帧目录存在且包含文件", testUploadMissedPhotoDirectoryVerified},
+		{"临时目录清理验证", "最终扫描-无孤立临时目录", "所有测试结束后扫描磁盘，验证无孤立的frames/chunks目录残留", "无孤立临时目录", testFinalSweepNoOrphanDirectories},
 	}
 }
 
@@ -1698,4 +1705,177 @@ func httpDownloadFile(url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
+}
+
+// ──────────────────────────── 临时目录清理验证 ────────────────────────────
+
+func testFailedVideoTaskFrameCleanup() testResult {
+	if createdMcID == "" {
+		return skip("没有已创建的模型配置")
+	}
+
+	// 1. 创建空 Video 素材库（不上传任何文件）
+	libResp := doJSON("POST", apiPrefix, map[string]interface{}{
+		"Name":        "抽帧清理测试-空视频素材库",
+		"Type":        "Video",
+		"Description": "空素材库，用于触发extractFrames失败并验证帧目录清理",
+	})
+	if libResp.ErrorCode != 0 {
+		return failf("创建空视频素材库失败: ErrorCode=%d, ErrorMsg=%s", libResp.ErrorCode, libResp.ErrorMsg)
+	}
+	var lib model.MaterialLibrary
+	json.Unmarshal(libResp.Data, &lib)
+	emptyVideoLibID = lib.Id
+
+	// 2. 用空素材库创建 Video 任务
+	taskResp := doJSON("POST", taskAPIPrefix, map[string]interface{}{
+		"Name":              "抽帧清理测试任务",
+		"Type":              "Video",
+		"ModelConfigId":     createdMcID,
+		"MaterialLibraryId": emptyVideoLibID,
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
+		"FrameInterval":     5,
+	})
+	if taskResp.ErrorCode != 0 {
+		return failf("创建视频任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
+	}
+
+	// 获取任务ID
+	time.Sleep(500 * time.Millisecond)
+	listResp := doJSON("GET", taskAPIPrefix+"?Page=1&PageSize=20", nil)
+	failedVideoTaskID = findTaskIDByPrefix(listResp.Data, "抽帧清理测试任务")
+	if failedVideoTaskID == "" {
+		return fail("无法获取抽帧清理测试任务ID")
+	}
+
+	// 3. 轮询等待任务变为 Failed（空素材库，无需LLM调用，应很快）
+	maxWait := 15
+	for i := 0; i < maxWait; i++ {
+		resp := doJSON("GET", taskAPIPrefix+"?Id="+failedVideoTaskID, nil)
+		item := parseFirstTaskItem(resp.Data)
+		if item == nil {
+			return fail("解析任务项失败")
+		}
+		if item.Status == "Failed" {
+			// 4. 验证帧目录不存在（extractFrames 失败时 defer 已清理）
+			frameDir := filepath.Join(uploadDir, "tasks", failedVideoTaskID, "frames")
+			if fileExists(frameDir) {
+				// 清理
+				doJSON("DELETE", taskAPIPrefix+"/"+failedVideoTaskID, nil)
+				doJSON("DELETE", apiPrefix+"/"+emptyVideoLibID, nil)
+				emptyVideoLibID = ""
+				failedVideoTaskID = ""
+				return failf("extractFrames失败后帧目录未被清理: %s", frameDir)
+			}
+
+			// 5. 验证任务目录不存在或为空
+			taskDir := filepath.Join(uploadDir, "tasks", failedVideoTaskID)
+			if fileExists(taskDir) {
+				entries, _ := os.ReadDir(taskDir)
+				if len(entries) > 0 {
+					doJSON("DELETE", taskAPIPrefix+"/"+failedVideoTaskID, nil)
+					doJSON("DELETE", apiPrefix+"/"+emptyVideoLibID, nil)
+					emptyVideoLibID = ""
+					failedVideoTaskID = ""
+					return failf("extractFrames失败后任务目录不为空: %s, entries=%d", taskDir, len(entries))
+				}
+			}
+
+			// 6. 清理
+			doJSON("DELETE", taskAPIPrefix+"/"+failedVideoTaskID, nil)
+			doJSON("DELETE", apiPrefix+"/"+emptyVideoLibID, nil)
+			emptyVideoLibID = ""
+			failedVideoTaskID = ""
+
+			return passf("extractFrames失败后帧目录已被正确清理, 任务Failed")
+		}
+		if item.Status == "Completed" {
+			doJSON("DELETE", taskAPIPrefix+"/"+failedVideoTaskID, nil)
+			doJSON("DELETE", apiPrefix+"/"+emptyVideoLibID, nil)
+			emptyVideoLibID = ""
+			failedVideoTaskID = ""
+			return fail("空视频素材库任务不应变为Completed")
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	// 超时清理
+	doJSON("DELETE", taskAPIPrefix+"/"+failedVideoTaskID, nil)
+	doJSON("DELETE", apiPrefix+"/"+emptyVideoLibID, nil)
+	emptyVideoLibID = ""
+	failedVideoTaskID = ""
+	return failf("轮询超时(15s)，任务状态未变为Failed, taskID=%s", failedVideoTaskID)
+}
+
+func testUploadMissedPhotoDirectoryVerified() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	frameDir := filepath.Join(uploadDir, "tasks", imageTaskID, "frames")
+
+	// 验证帧目录存在
+	if !fileExists(frameDir) {
+		return failf("补录照片后帧目录不存在: %s", frameDir)
+	}
+
+	// 验证帧目录下有文件
+	entries, err := os.ReadDir(frameDir)
+	if err != nil {
+		return failf("读取帧目录失败: %s", err)
+	}
+
+	fileCount := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			fileCount++
+		}
+	}
+
+	if fileCount == 0 {
+		return fail("补录照片后帧目录为空")
+	}
+
+	return passf("补录照片后帧目录正常, 文件数=%d（失败路径清理需单元测试覆盖）", fileCount)
+}
+
+func testFinalSweepNoOrphanDirectories() testResult {
+	var problems []string
+
+	// 检查 chunks 目录残留
+	chunkDirs := hasChunkDirs(uploadDir)
+	if len(chunkDirs) > 0 {
+		problems = append(problems, fmt.Sprintf("发现%d个残留chunks目录: %v", len(chunkDirs), chunkDirs))
+	}
+
+	// 检查 tasks 目录下的 frames 子目录
+	tasksDir := filepath.Join(uploadDir, "tasks")
+	if fileExists(tasksDir) {
+		frameDirs := hasFrameDirs(tasksDir)
+		if len(frameDirs) > 0 {
+			// 进一步检查：是否有仍然存在的完成任务（合法的frames目录）
+			for _, fd := range frameDirs {
+				// 提取任务ID（路径格式: uploads/tasks/{taskId}/frames）
+				rel, err := filepath.Rel(tasksDir, fd)
+				if err != nil {
+					problems = append(problems, fmt.Sprintf("孤立frames目录: %s", fd))
+					continue
+				}
+				taskIDFromPath := filepath.Dir(rel)
+				// 检查该任务是否仍在DB中且状态允许有frames目录
+				resp := doJSON("GET", taskAPIPrefix+"?Id="+taskIDFromPath, nil)
+				item := parseFirstTaskItem(resp.Data)
+				if item == nil || item.Status == "Failed" {
+					// 任务不存在或已Failed，不应有frames目录残留
+					problems = append(problems, fmt.Sprintf("孤立frames目录(任务%s不存在或Failed): %s", taskIDFromPath, fd))
+				}
+			}
+		}
+	}
+
+	if len(problems) > 0 {
+		return failf("发现孤立临时目录: %s", strings.Join(problems, "; "))
+	}
+	return pass("无孤立frames/chunks目录残留")
 }

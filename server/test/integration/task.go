@@ -64,6 +64,11 @@ func getTaskTests() []testCase {
 		{"任务结果领域", "标记素材误报", "将一个 Detected 素材标记为 FalsePositive，验证 Progress 统计自动调整", "FalsePositive 计数增加，TruePositive 减少", testMarkFalsePositive},
 		{"任务结果领域", "删除误报素材", "将 FalsePositive 素材标记为 DeletedFp，验证默认列表不返回", "DeletedFp 素材不在默认列表中", testMarkDeletedFp},
 		{"任务结果领域", "恢复误报素材", "将 DeletedFp 素材恢复为正常（Correction=null），验证 Progress 恢复", "素材恢复正常，Progress 统计恢复", testRestoreCorrection},
+		{"任务结果领域", "按ImageId精确查询素材", "通过 ImageId 参数查询单条素材，验证返回正确", "Total=1，Id 匹配", testGetImageById},
+		{"任务结果领域", "按Correction筛选误报素材", "通过 Correction=FalsePositive 筛选误报素材，验证只返回误报", "全部为 FalsePositive", testListImagesByCorrection},
+		{"任务结果领域", "查询不存在任务的素材", "查询不存在的任务ID的素材列表", "返回错误码，ErrorCode 非零", testListImagesTaskNotFound},
+		{"任务结果领域", "查询不存在的素材ID", "通过不存在的 ImageId 查询素材", "返回错误码，ErrorCode 非零", testGetImageNotFound},
+		{"任务结果领域", "无效Correction值校验", "传入非法的 Correction 值", "返回参数校验失败", testInvalidCorrection},
 
 		// 异常场景
 		{"任务异常场景", "类型不匹配校验", "使用图片素材库创建Video任务", "返回非零ErrorCode，提示类型不匹配", testTaskTypeMismatch},
@@ -1281,7 +1286,7 @@ func testUploadMissedPhoto() testResult {
 		return skip("没有测试图片可上传")
 	}
 
-	uploadResp := doMultipart(taskAPIPrefix+"/"+imageTaskID+"/images", []string{imgFiles[0]})
+	uploadResp := doSingleFileUpload(taskAPIPrefix+"/"+imageTaskID+"/images", imgFiles[0])
 	if uploadResp.ErrorCode != 0 {
 		return failf("补录照片失败: ErrorCode=%d, ErrorMsg=%s", uploadResp.ErrorCode, uploadResp.ErrorMsg)
 	}
@@ -1446,6 +1451,132 @@ func testRestoreCorrection() testResult {
 	}
 
 	return passf("恢复成功, Correction=null, TruePositive=%d", item.Progress.CompletedDetail.DetectedDetail.TruePositive)
+}
+
+func testGetImageById() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+	if correctionImageID == "" {
+		return skip("没有可用的素材 ID")
+	}
+
+	// 按 ImageId 精确查询
+	resp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?ImageId="+correctionImageID, nil)
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	var pageData common.PageData
+	json.Unmarshal(resp.Data, &pageData)
+
+	if pageData.Total != 1 {
+		return failf("Total=%d, 期望=1", pageData.Total)
+	}
+
+	itemsJSON, _ := json.Marshal(pageData.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	if len(items) == 0 {
+		return fail("Items 为空")
+	}
+	if items[0].Id != correctionImageID {
+		return failf("Id 不匹配: 期望=%s, 实际=%s", correctionImageID, items[0].Id)
+	}
+
+	return passf("精确查询成功, Id=%s, Total=1", items[0].Id)
+}
+
+func testListImagesByCorrection() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	// 先标记一个素材为 FalsePositive（如果 correctionImageID 可用）
+	if correctionImageID == "" {
+		return skip("没有可用的素材 ID 用于误报筛选测试")
+	}
+
+	// 标记为 FalsePositive
+	doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": "FalsePositive",
+	})
+
+	// 按 Correction=FalsePositive 筛选
+	resp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Correction=FalsePositive&Page=1&PageSize=100", nil)
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	var pageData common.PageData
+	json.Unmarshal(resp.Data, &pageData)
+
+	if pageData.Total == 0 {
+		return fail("Correction=FalsePositive 筛选结果为空")
+	}
+
+	itemsJSON, _ := json.Marshal(pageData.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	for _, item := range items {
+		if item.Correction == nil || *item.Correction != "FalsePositive" {
+			return failf("存在非 FalsePositive 的素材: Correction=%v", item.Correction)
+		}
+	}
+
+	// 恢复正常
+	doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": nil,
+	})
+
+	return passf("筛选成功, Total=%d, 全部为 FalsePositive", pageData.Total)
+}
+
+func testListImagesTaskNotFound() testResult {
+	resp := doJSON("GET", taskAPIPrefix+"/nonexistent_task_id/images?Page=1&PageSize=24", nil)
+	if resp.ErrorCode == 0 {
+		return fail("查询不存在的任务应返回错误")
+	}
+
+	if resp.ErrorMsg != "素材不存在" && resp.ErrorMsg != "任务不存在" {
+		// 任务不存在和素材不存在都是合理的错误
+		return passf("正确返回错误, ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	return passf("正确返回错误, ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+}
+
+func testGetImageNotFound() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	resp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?ImageId=img_nonexistent", nil)
+	if resp.ErrorCode == 0 {
+		return fail("查询不存在的素材应返回错误")
+	}
+
+	return passf("正确返回错误, ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+}
+
+func testInvalidCorrection() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+	if correctionImageID == "" {
+		return skip("没有可用的素材 ID")
+	}
+
+	resp := doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": "InvalidValue",
+	})
+	if resp.ErrorCode == 0 {
+		return fail("无效 Correction 值应返回错误")
+	}
+
+	return passf("正确拒绝无效值, ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 }
 
 // ──────────────────────────── 辅助函数 ────────────────────────────

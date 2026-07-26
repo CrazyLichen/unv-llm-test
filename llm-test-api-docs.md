@@ -72,7 +72,7 @@
 | 40005 | 任务状态不允许此操作 | 如对已完成任务执行不合理的操作 |
 | 40006 | 模型配置不存在 | ModelConfigId 无效 |
 | 40007 | 素材库不存在 | MaterialLibraryId 无效 |
-| 40008 | 素材库已被任务关联 | 素材库 1:1 绑定，不可重复关联 |
+| 40008 | 素材库已被任务关联 | 素材库关联任务时，不允许删除文件 |
 | 40009 | 素材库类型与任务类型不匹配 | Image 素材库只能关联 Image 任务 |
 | 40010 | 文件不存在 | MaterialFileId 无效 |
 | 40011 | 文件上传未完成 | 素材库中有未完成上传的文件 |
@@ -98,6 +98,7 @@
 | Analyzing | 检测中 | 任务正在执行检测（含视频抽帧） |
 | Paused | 暂停中 | 任务已暂停，可恢复继续检测 |
 | Completed | 已完成 | 全部素材检测完毕 |
+| Failed | 已失败 | 任务执行失败（如视频抽帧失败、无待检测素材、模型配置不存在），附带 FailReason，可通过 PUT 恢复 |
 
 #### ImageStatus — 素材检测状态
 
@@ -188,6 +189,7 @@
 | Prompt | string | 下发给大模型的提示词 |
 | Target | string | 检测目标名称 |
 | FrameInterval | int32 \| null | 抽帧间隔，单位秒（Type=Video 时有值） |
+| FailReason | string \| null | 失败原因（Status=Failed 时有值） |
 | Progress | object | 检测进度与统计，见 [Progress](#25-progress检测进度与统计) |
 | CreatedAt | string | 创建时间 |
 
@@ -261,11 +263,11 @@ Total: 48
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| X | int32 | 左上角 X 坐标（百分比，0-100） |
-| Y | int32 | 左上角 Y 坐标（百分比，0-100） |
-| Width | int32 | 框宽度（百分比） |
-| Height | int32 | 框高度（百分比） |
-| Confidence | float | 置信度（0-1） |
+| X1 | int32 | 左上角 X 坐标（0-1000 归一化） |
+| Y1 | int32 | 左上角 Y 坐标（0-1000 归一化） |
+| X2 | int32 | 右下角 X 坐标（0-1000 归一化） |
+| Y2 | int32 | 右下角 Y 坐标（0-1000 归一化） |
+| Confidence | string | 置信度描述（如 "high"、"medium"、"low"，来自大模型返回的 confidence_note） |
 | Label | string | 目标标签 |
 
 ---
@@ -1225,7 +1227,7 @@ GET /api/material-libraries/ml_001/files?Page=1&PageSize=24
 
 #### 后端行为说明
 
-1. 校验参数（ModelConfigId 是否存在、MaterialLibraryId 是否存在、素材库类型是否与任务类型一致、素材库是否已被其他任务关联、必填项是否完整）
+1. 校验参数（ModelConfigId 是否存在、MaterialLibraryId 是否存在、素材库类型是否与任务类型一致、必填项是否完整）
 2. 校验素材库中是否存在 UploadStatus 不为 Completed 的文件，若存在则拒绝创建（返回 ErrorCode=40011）
 3. 创建任务记录，关联指定的模型配置和素材库，状态设为 `Pending`（等待中），进入后端任务排队队列
 4. **Type=Image**：为素材库下所有图片创建 Image 记录，状态设为 `Pending`（待检测）
@@ -1289,6 +1291,7 @@ GET /api/tasks?Id=task_20260726_001
 | Prompt | string | 下发给大模型的提示词 |
 | Target | string | 检测目标名称 |
 | FrameInterval | int32 \| null | 抽帧间隔，单位秒（Type=Video 时有值） |
+| FailReason | string \| null | 失败原因（Status=Failed 时有值） |
 | Progress | object | 检测进度与统计，见 [Progress](#25-progress检测进度与统计) |
 | CreatedAt | string | 创建时间 |
 
@@ -1315,6 +1318,7 @@ GET /api/tasks?Id=task_20260726_001
         "Prompt": "请检测图片中是否有沿街摆摊行为，返回JSON格式...",
         "Target": "沿街摆摊",
         "FrameInterval": null,
+        "FailReason": null,
         "Progress": {
           "Total": 48,
           "Completed": 48,
@@ -1435,7 +1439,8 @@ GET /api/tasks?Id=task_20260726_001
   - 当前状态为 `Pending`（等待中）时可暂停，暂停后不再参与调度排队
   - 当前状态为 `Analyzing`（检测中）时可暂停，暂停后停止检测队列
 - **Status = "Analyzing"**：恢复任务，任务状态变为 `Analyzing`（检测中），继续从中断处执行检测
-  - 仅当任务当前状态为 `Paused`（暂停中）时可恢复
+  - 当前状态为 `Paused`（暂停中）时可恢复
+  - 当前状态为 `Failed`（已失败）时可恢复，恢复后清除 FailReason 并重新入队执行
 
 ---
 
@@ -1507,15 +1512,15 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
           "HasTarget": true,
           "Boxes": [
             {
-              "X": 120,
-              "Y": 85,
-              "Width": 200,
-              "Height": 160,
-              "Confidence": 0.92,
+              "X1": 120,
+              "Y1": 85,
+              "X2": 320,
+              "Y2": 245,
+              "Confidence": "high",
               "Label": "沿街摆摊"
             }
           ],
-          "RawResponse": "{ \"has_target\": true, \"boxes\": [{\"x\": 120, \"y\": 85, \"width\": 200, \"height\": 160, \"confidence\": 0.92, \"label\": \"沿街摆摊\"}] }",
+          "RawResponse": "{ \"detected_flag\": true, \"detections\": [{\"bbox_2d\": [120, 85, 320, 245], \"category\": \"沿街摆摊\", \"confidence_note\": \"high\"}] }",
           "AnalyzedAt": "2026-07-26 10:30:15"
         },
         "FailReason": null,
@@ -1532,15 +1537,15 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
           "HasTarget": true,
           "Boxes": [
             {
-              "X": 80,
-              "Y": 60,
-              "Width": 120,
-              "Height": 100,
-              "Confidence": 0.71,
+              "X1": 80,
+              "Y1": 60,
+              "X2": 200,
+              "Y2": 160,
+              "Confidence": "medium",
               "Label": "沿街摆摊"
             }
           ],
-          "RawResponse": "{ \"has_target\": true, \"boxes\": [{\"x\": 80, \"y\": 60, \"width\": 120, \"height\": 100, \"confidence\": 0.71, \"label\": \"沿街摆摊\"}] }",
+          "RawResponse": "{ \"detected_flag\": true, \"detections\": [{\"bbox_2d\": [80, 60, 200, 160], \"category\": \"沿街摆摊\", \"confidence_note\": \"medium\"}] }",
           "AnalyzedAt": "2026-07-26 10:30:25"
         },
         "FailReason": null,
@@ -1600,7 +1605,7 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
 
 将素材标记为误报，素材仍可见但标注为误报状态，配合误报删除和恢复接口可动态调整任务下的误报率。
 
-- **URL**：`PATCH /api/tasks/:id/images/:imageId`
+- **URL**：`PUT /api/tasks/:id/images/:imageId`
 - **Content-Type**：`application/json`
 
 #### Path Parameters
@@ -1689,7 +1694,7 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
 | 19 | PUT | `/api/tasks/:id` | 暂停/恢复任务 |
 | 20 | GET | `/api/tasks/:id/images` | 获取任务分析结果（支持按素材 ID 查询单条） |
 | 21 | POST | `/api/tasks/:id/images` | 补录漏报照片 |
-| 22 | PATCH | `/api/tasks/:id/images/:imageId` | 标记素材误报/删除误报/恢复 |
+| 22 | PUT | `/api/tasks/:id/images/:imageId` | 标记素材误报/删除误报/恢复 |
 
 ---
 
@@ -1713,7 +1718,7 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
       │   │  暂停中   │
       │   └────┬─────┘
       │        │
-      │   PUT { Status: "Analyzing" }  (仅暂停→可恢复)
+      │   PUT { Status: "Analyzing" }  (暂停→可恢复)
       │        │
       │        ▼
    后端调度执行 ─────────────────────────────────┐
@@ -1722,13 +1727,24 @@ GET /api/tasks/task_20260726_001/images?ImageId=img_001
    ┌──────────┐   PUT { Status: "Paused" }    │
    │ Analyzing │ ──────────────────────────▶ ┌──────────┐
    │  检测中   │ ◄────────────────────────── │  Paused  │
-   └────┬─────┘   PUT { Status: "Analyzing" }  暂停中   │
-        │                                    └────┬─────┘
-   全部素材检测完毕                                │
-        │                                   恢复后
-        ▼                                   继续检测
-  ┌───────────┐                               │
-  │ Completed │ ◄─────────────────────────────┘
+   └──┬───┬───┘   PUT { Status: "Analyzing" }  暂停中   │
+      │   │                                    └────┬─────┘
+      │   │  执行失败（抽帧失败/无素材/模型配置缺失）     │
+      │   │        │                           恢复后
+      │   │        ▼                           继续检测
+      │   │   ┌──────────┐                        │
+      │   │   │  Failed  │ ◄── 已失败              │
+      │   │   │  已失败   │   FailReason 有失败原因   │
+      │   │   └────┬─────┘                        │
+      │   │        │                              │
+      │   │   PUT { Status: "Analyzing" }         │
+      │   │   (Failed→可恢复，清除FailReason)       │
+      │   │        │                              │
+   全部素材检测完毕  └────────────────────────────────┘
+      │
+      ▼
+  ┌───────────┐
+  │ Completed │
   │  已完成    │
   └───────────┘
 ```
@@ -1823,13 +1839,13 @@ Detected      NotDetected
 │                                                                  │
 │  ── 矫正操作 ──                                                   │
 │                                                                  │
-│  PATCH /tasks/:id/images/:id { Correction: "FalsePositive" }     │
+│  PUT /tasks/:id/images/:id { Correction: "FalsePositive" }         │
 │  → 标记误报，素材仍可见但标注为误报，Progress 自动调整（误报率变化）│
 │                                                                  │
-│  PATCH /tasks/:id/images/:id { Correction: "DeletedFp" }         │
+│  PUT /tasks/:id/images/:id { Correction: "DeletedFp" }         │
 │  → 删除误报，素材列表自动过滤，Progress 自动调整                  │
 │                                                                  │
-│  PATCH /tasks/:id/images/:id { Correction: null }                │
+│  PUT /tasks/:id/images/:id { Correction: null }                │
 │  → 恢复正常，清除矫正标记，Progress 自动调整                       │
 │                                                                  │
 │  POST /tasks/:id/images (multipart/form-data, 上传图片)           │

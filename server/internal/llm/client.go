@@ -54,8 +54,8 @@ func (c *LLMClient) Analyze(
 	reqOpts := []option.RequestOption{
 		option.WithMaxRetries(opt.MaxRetries),
 	}
-	if opt.TimeoutMs > 0 {
-		reqOpts = append(reqOpts, option.WithRequestTimeout(time.Duration(opt.TimeoutMs)*time.Millisecond))
+	if opt.TimeoutUs > 0 {
+		reqOpts = append(reqOpts, option.WithRequestTimeout(time.Duration(opt.TimeoutUs)*time.Microsecond))
 	}
 
 	// 获取 client
@@ -85,7 +85,7 @@ func (c *LLMClient) Analyze(
 	elapsed := time.Since(start)
 
 	if err != nil {
-		slog.Error("LLM调用失败", "configID", configID, "model", config.ModelId, "error", err, "latency", elapsed)
+		slog.Error("LLM调用失败", "configID", configID, "model", config.ModelId, "error", err, "latencyMs", elapsed.Milliseconds())
 		return nil, common.NewErrLLMCallFailed(err.Error())
 	}
 
@@ -116,7 +116,7 @@ func (c *LLMClient) Analyze(
 		RawJSON: string(rawJSON),
 	}
 
-	slog.Info("LLM调用完成", "configID", configID, "model", resp.Model, "latency", elapsed,
+	slog.Info("LLM调用完成", "configID", configID, "model", resp.Model, "latencyMs", elapsed.Milliseconds(),
 		"promptTokens", resp.Usage.PromptTokens, "completionTokens", resp.Usage.CompletionTokens)
 
 	return resp, nil
@@ -150,13 +150,13 @@ func (c *LLMClient) RemoveClient(configID string) {
 
 // mergeOptions 合并调用选项
 func mergeOptions(opts []AnalyzeOption) AnalyzeOption {
-	result := AnalyzeOption{TimeoutMs: 60000} // 默认 60 秒
+	result := AnalyzeOption{TimeoutUs: 60000000} // 默认 60 秒（微秒）
 	for _, o := range opts {
 		if o.MaxRetries > 0 {
 			result.MaxRetries = o.MaxRetries
 		}
-		if o.TimeoutMs > 0 {
-			result.TimeoutMs = o.TimeoutMs
+		if o.TimeoutUs > 0 {
+			result.TimeoutUs = o.TimeoutUs
 		}
 	}
 	return result

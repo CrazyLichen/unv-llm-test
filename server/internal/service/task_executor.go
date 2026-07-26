@@ -342,7 +342,7 @@ func (s *Scheduler) detectImages(item *QueueTaskItem, task *model.Task) {
 		resp, err := s.llmClient.Analyze(item.Ctx, mc.Id, configParam, llm.LLMRequest{
 			Prompt:      task.Prompt,
 			ImageBase64: []string{imageBase64},
-		}, llm.WithRetry(2), llm.WithTimeoutMs(120000))
+		}, llm.WithRetry(2), llm.WithTimeoutUs(120000000))
 
 		if err != nil {
 			slog.Error("LLM 调用失败", "imageId", img.Id, "error", err)

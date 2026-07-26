@@ -42,6 +42,11 @@ func getTaskTests() []testCase {
 		{"暂停与恢复", "恢复暂停的任务", "恢复被暂停的任务，验证Worker重新开始处理并最终完成", "任务恢复后状态变为Analyzing并最终Completed，Progress增长到完成", testResumeTask},
 		{"暂停与恢复", "删除任务验证清理", "删除任务，验证DB记录和磁盘文件均已清除", "任务查询返回错误，帧目录不存在，素材库可删除", testDeleteTask},
 
+		// Failed任务恢复
+		{"Failed任务恢复", "创建空素材库任务使其Failed", "创建一个空图片素材库，用其创建Image任务，因无素材导致任务Failed", "任务状态=Failed，FailReason非空", testCreateFailedTask},
+		{"Failed任务恢复", "恢复Failed任务", "恢复Failed任务，验证状态变为Analyzing，FailReason被清除，Worker重新入队执行", "状态变为Analyzing/Completed，FailReason=nil，Worker重新工作", testResumeFailedTask},
+		{"Failed任务恢复", "清理Failed恢复测试数据", "删除恢复测试产生的任务和素材库", "任务和素材库均已删除", testCleanupFailedTaskData},
+
 		// 视频任务 - 抽帧检测完整流程
 		{"任务管理-视频检测", "创建视频类型任务", "使用已有模型配置和视频素材库创建视频检测任务", "创建成功，任务ID非空", testCreateVideoTask},
 		{"任务管理-视频检测", "验证视频抽帧结果", "检查帧文件实际存在于磁盘且可访问，DB中Image记录包含FrameIndex和AccessUrl", "帧目录有jpg文件，帧图片可通过HTTP访问，DB记录与磁盘一致", testVerifyVideoFrames},
@@ -768,6 +773,143 @@ func testVerifyVideoDetectionResults() testResult {
 	}
 
 	return fail("轮询超时(300s)，视频任务未完成")
+}
+
+// ──────────────────────────── Failed任务恢复 ────────────────────────────
+
+var (
+	failedTestLibID string
+	failedTaskID    string
+)
+
+func testCreateFailedTask() testResult {
+	if createdMcID == "" {
+		return skip("没有已创建的模型配置")
+	}
+
+	// 创建一个空图片素材库（不上传任何文件）
+	libResp := doJSON("POST", apiPrefix, map[string]interface{}{
+		"Name":        "Failed恢复测试空素材库",
+		"Type":        "Image",
+		"Description": "空素材库，用于触发任务Failed状态",
+	})
+	if libResp.ErrorCode != 0 {
+		return failf("创建空素材库失败: ErrorCode=%d, ErrorMsg=%s", libResp.ErrorCode, libResp.ErrorMsg)
+	}
+	var lib model.MaterialLibrary
+	json.Unmarshal(libResp.Data, &lib)
+	failedTestLibID = lib.Id
+
+	// 使用空素材库创建Image任务
+	taskResp := doJSON("POST", taskAPIPrefix, map[string]interface{}{
+		"Name":              "Failed恢复测试任务",
+		"Type":              "Image",
+		"ModelConfigId":     createdMcID,
+		"MaterialLibraryId": failedTestLibID,
+		"Prompt":            "请分析图片",
+		"Target":            "测试目标",
+	})
+	if taskResp.ErrorCode != 0 {
+		return failf("创建任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
+	}
+
+	// 获取任务ID
+	time.Sleep(300 * time.Millisecond)
+	listResp := doJSON("GET", taskAPIPrefix+"?Page=1&PageSize=20", nil)
+	failedTaskID = findTaskIDByPrefix(listResp.Data, "Failed恢复测试任务")
+	if failedTaskID == "" {
+		return fail("无法获取Failed测试任务ID")
+	}
+
+	// 轮询等待任务变为Failed（无素材时应很快）
+	maxWait := 15
+	for i := 0; i < maxWait; i++ {
+		resp := doJSON("GET", taskAPIPrefix+"?Id="+failedTaskID, nil)
+		item := parseFirstTaskItem(resp.Data)
+		if item == nil {
+			return fail("解析任务项失败")
+		}
+
+		if item.Status == "Failed" {
+			if item.FailReason == nil || *item.FailReason == "" {
+				return fail("任务状态为Failed但FailReason为空")
+			}
+			return passf("任务正确标记为Failed, FailReason=%s", *item.FailReason)
+		}
+
+		if item.Status == "Completed" {
+			return fail("空素材库任务不应变为Completed")
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return failf("轮询超时(15s)，任务状态未变为Failed, taskID=%s", failedTaskID)
+}
+
+func testResumeFailedTask() testResult {
+	if failedTaskID == "" {
+		return skip("没有Failed状态的任务")
+	}
+
+	// 恢复Failed任务
+	resumeResp := doJSON("PUT", taskAPIPrefix+"/"+failedTaskID, map[string]interface{}{
+		"Status": "Analyzing",
+	})
+	if resumeResp.ErrorCode != 0 {
+		return failf("恢复Failed任务失败: ErrorCode=%d, ErrorMsg=%s", resumeResp.ErrorCode, resumeResp.ErrorMsg)
+	}
+
+	// 验证任务确实被Worker重新执行：空素材库任务会再次经过 Analyzing → Failed
+	// 轮询等待任务再次变为Failed（说明Worker确实重新执行了完整流程）
+	maxWait := 15
+	reachedAnalyzing := false
+	for i := 0; i < maxWait; i++ {
+		resp := doJSON("GET", taskAPIPrefix+"?Id="+failedTaskID, nil)
+		item := parseFirstTaskItem(resp.Data)
+		if item == nil {
+			return fail("解析任务项失败")
+		}
+
+		if item.Status == "Analyzing" {
+			reachedAnalyzing = true
+			fmt.Printf("  [INFO] 恢复后任务状态变为Analyzing, Worker已重新入队\n")
+		}
+
+		if item.Status == "Failed" {
+			if item.FailReason == nil || *item.FailReason == "" {
+				return fail("任务再次Failed但FailReason为空")
+			}
+			return passf("Failed任务恢复成功, Worker重新执行后再次Failed(空素材库), FailReason=%s, 曾到达Analyzing=%v",
+				*item.FailReason, reachedAnalyzing)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return fail("恢复后轮询超时，Worker未重新执行")
+}
+
+func testCleanupFailedTaskData() testResult {
+	// 删除Failed恢复测试的任务
+	if failedTaskID != "" {
+		resp := doJSON("DELETE", taskAPIPrefix+"/"+failedTaskID, nil)
+		if resp.ErrorCode != 0 {
+			return failf("删除任务失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+		}
+		failedTaskID = ""
+	}
+
+	// 删除空素材库
+	if failedTestLibID != "" {
+		resp := doJSON("DELETE", apiPrefix+"/"+failedTestLibID, nil)
+		if resp.ErrorCode != 0 {
+			return failf("删除素材库失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+		}
+		failedTestLibID = ""
+	}
+
+	return pass("Failed恢复测试数据清理完成")
 }
 
 // ──────────────────────────── 异常场景 ────────────────────────────

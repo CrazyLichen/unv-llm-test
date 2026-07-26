@@ -24,6 +24,57 @@ var (
 	correctionImageID  string
 )
 
+// 占道经营检测提示词
+const detectionPrompt = `你是一个城市治理视觉标注专家。请检测图中所有的"占道经营"目标，允许多个目标同时输出，其他类别一律忽略。
+
+【占道经营的严格定义】
+必须满足以下全部条件才算正例：
+1. 位置在公共开放空间：城市道路、人行道、广场、步行街、小区门口外等公共区域（必须是明确的公共区域，不能是私人院落或店铺内部）。
+2. 存在明确的经营性行为或经营工具，包括但不限于：
+   - 流动摊贩：手推车、电动三轮车、改装货车搭载货品
+   - 固定/半固定摊位：遮阳棚、折叠桌、地垫上摆放的商品
+   - 地面摆放的经营物品：水果筐、蔬菜堆、衣架挂的衣服、烧烤架等
+   - 人员正在该区域进行售卖、招揽顾客、称重收款等行为
+
+【必须排除的负例（即使看起来像摊位也不标注）】
+1. 合法商铺：门面房内部、有营业执照的门店门前合规摆放的物品（判断依据：背后有明显店铺门头、处于商铺红线范围内）。
+2. 便民服务点：政府规划的早市、夜市、疏导点内合规摊位。
+3. 行人随身物品：背包、手提袋、婴儿车、购物车（无售卖行为）。
+4. 非经营车辆：路边正常停放的私家车、电动车、自行车。
+5. 市政设施：公交站台、报刊亭、自动售货机、公共座椅。
+6. 仅路过人员：站在路边但未摆放商品、无经营动作的人。
+7. 装修施工物料：建材堆放在施工围挡范围内。
+8. 快递/外卖配送：骑手短暂停靠取送餐，车上无展示售卖的商品。
+9. 私人区域杂物：居民楼前自家摆放的椅子、杂物（无售卖行为）。
+
+【标注规则】
+1. 多目标并行检测：如果画面中有多个独立的占道经营摊位，请在数组中分别列出每一个，不要遗漏。
+2. 同一经营主体合并标注：如一辆三轮车+旁边摆放的货品+摊主，合并为一个最小外接矩形框。
+3. 框要紧贴目标边缘：框必须紧密包围经营工具和人员，禁止包含无关背景（如大面积的树木、天空、无关的路面），禁止留过多空白。
+4. 坐标数值：输出坐标值为基于图像宽高的归一化数值，范围严格限定在 0-1000 之间，顺序为 [x1, y1, x2, y2]。
+
+【输出格式】
+仅输出纯JSON，不要有任何解释文字，不要输出代码块标记（如 ` + "```json" + `）：
+{
+  "detected_flag": true,
+  "detections": [
+    {
+      "category": "占道经营",
+      "bbox_2d": [x1, y1, x2, y2],
+      "confidence_note": "简要说明判定依据，如'电动三轮车搭载水果在人行道售卖'"
+    },
+    {
+      "category": "占道经营",
+      "bbox_2d": [x1, y1, x2, y2],
+      "confidence_note": "第二个目标的判定依据..."
+    }
+  ]
+}
+
+如果未发现任何占道经营，输出：{"detected_flag": false, "detections": []}
+
+现在处理这张图片：`
+
 // ──────────────────────────── 测试注册 ────────────────────────────
 
 // getTaskTests 返回任务管理领域的所有测试用例
@@ -122,8 +173,8 @@ func testCreateImageTask() testResult {
 		"Type":              "Image",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": imageLibID,
-		"Prompt":            "请分析这张图片中是否存在异常物体或目标。如果检测到，请返回detected_flag为true，并在detections中提供bbox_2d坐标[x1,y1,x2,y2]（0-1000归一化）、category类别名称、confidence_note置信度说明。如果未检测到，返回detected_flag为false。",
-		"Target":            "异常物体",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 	})
 	if resp.ErrorCode != 0 {
 		return failf("创建图片任务失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
@@ -415,8 +466,8 @@ func testCreateAndPauseTask() testResult {
 		"Type":              "Image",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": pauseTestLibID,
-		"Prompt":            "请分析这张图片中是否存在目标。",
-		"Target":            "测试目标",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 	})
 	if taskResp.ErrorCode != 0 {
 		return failf("创建任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
@@ -610,8 +661,8 @@ func testCreateVideoTask() testResult {
 		"Type":              "Video",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": videoLibID,
-		"Prompt":            "请分析这帧画面中是否存在异常物体或目标。如果检测到，请返回detected_flag为true，并在detections中提供bbox_2d坐标[x1,y1,x2,y2]（0-1000归一化）、category类别名称、confidence_note置信度说明。如果未检测到，返回detected_flag为false。",
-		"Target":            "异常物体",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 		"FrameInterval":     5,
 	})
 	if resp.ErrorCode != 0 {
@@ -824,8 +875,8 @@ func testCreateFailedTask() testResult {
 		"Type":              "Image",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": failedTestLibID,
-		"Prompt":            "请分析图片",
-		"Target":            "测试目标",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 	})
 	if taskResp.ErrorCode != 0 {
 		return failf("创建任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
@@ -978,8 +1029,8 @@ func testResumeContinuesFromLastImage() testResult {
 		"Type":              "Image",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": continueTestLibID,
-		"Prompt":            "请分析这张图片中是否存在目标。",
-		"Target":            "测试目标",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 	})
 	if taskResp.ErrorCode != 0 {
 		return failf("创建任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
@@ -1130,8 +1181,8 @@ func testTaskTypeMismatch() testResult {
 		"Type":              "Video",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": imageLibID,
-		"Prompt":            "测试",
-		"Target":            "测试",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 		"FrameInterval":     5,
 	})
 
@@ -1160,8 +1211,8 @@ func testTaskMaterialLibRebind() testResult {
 		"Type":              "Image",
 		"ModelConfigId":     createdMcID,
 		"MaterialLibraryId": imageLibID,
-		"Prompt":            "测试重复绑定",
-		"Target":            "测试",
+		"Prompt":            detectionPrompt,
+		"Target":            "占道经营",
 	})
 
 	if resp.ErrorCode != 0 {

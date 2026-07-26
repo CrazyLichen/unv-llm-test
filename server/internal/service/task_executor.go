@@ -440,7 +440,7 @@ func (s *Scheduler) checkCompletion(ctx context.Context, taskId string) {
 func parseDetectionResult(content string) (*model.Detection, string, string) {
 	// 尝试标准 JSON 解析
 	var result struct {
-		DetectedFlag bool `json:"detected_flag"`
+		DetectedFlag *bool `json:"detected_flag"`
 		Detections   []struct {
 			Category       string  `json:"category"`
 			Bbox2d         []int32 `json:"bbox_2d"`
@@ -451,8 +451,14 @@ func parseDetectionResult(content string) (*model.Detection, string, string) {
 	err := json.Unmarshal([]byte(content), &result)
 	if err == nil {
 		// JSON 解析成功
+		// 判断是否检测到目标：优先使用 detected_flag，若无则根据 detections 数组推断
+		detected := len(result.Detections) > 0
+		if result.DetectedFlag != nil {
+			detected = *result.DetectedFlag
+		}
+
 		boxes := make([]model.Box, 0)
-		if result.DetectedFlag {
+		if detected {
 			for _, d := range result.Detections {
 				box := model.Box{
 					Label:      d.Category,
@@ -463,70 +469,6 @@ func parseDetectionResult(content string) (*model.Detection, string, string) {
 					box.Y1 = d.Bbox2d[1]
 					box.X2 = d.Bbox2d[2]
 					box.Y2 = d.Bbox2d[3]
-				}
-				boxes = append(boxes, box)
-			}
-		}
-
-		status := "NotDetected"
-		if result.DetectedFlag {
-			status = "Detected"
-		}
-
-		return &model.Detection{
-			HasTarget:   result.DetectedFlag,
-			Boxes:       boxes,
-			RawResponse: content,
-			AnalyzedAt:  common.NowFormatted(),
-		}, status, ""
-	}
-
-	// JSON 解析失败，尝试正则降级
-	slog.Warn("LLM 返回 JSON 解析失败，尝试正则降级", "content", content)
-
-	// 正则提取 detected_flag
-	flagRe := regexp.MustCompile(`"detected_flag"\s*:\s*(true|false)`)
-	flagMatch := flagRe.FindStringSubmatch(content)
-
-	if len(flagMatch) >= 2 {
-		detected := flagMatch[1] == "true"
-
-		boxes := make([]model.Box, 0)
-		if detected {
-			// 正则提取 bbox_2d
-			bboxRe := regexp.MustCompile(`"bbox_2d"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]`)
-			bboxMatches := bboxRe.FindAllStringSubmatch(content, -1)
-
-			// 正则提取 category
-			catRe := regexp.MustCompile(`"category"\s*:\s*"([^"]*)"`)
-			catMatches := catRe.FindAllStringSubmatch(content, -1)
-
-			// 正则提取 confidence_note
-			confRe := regexp.MustCompile(`"confidence_note"\s*:\s*"([^"]*)"`)
-			confMatches := confRe.FindAllStringSubmatch(content, -1)
-
-			maxLen := len(bboxMatches)
-			if len(catMatches) > maxLen {
-				maxLen = len(catMatches)
-			}
-
-			for i := 0; i < maxLen; i++ {
-				box := model.Box{}
-				if i < len(bboxMatches) && len(bboxMatches[i]) >= 5 {
-					x1, _ := strconv.ParseInt(bboxMatches[i][1], 10, 32)
-					y1, _ := strconv.ParseInt(bboxMatches[i][2], 10, 32)
-					x2, _ := strconv.ParseInt(bboxMatches[i][3], 10, 32)
-					y2, _ := strconv.ParseInt(bboxMatches[i][4], 10, 32)
-					box.X1 = int32(x1)
-					box.Y1 = int32(y1)
-					box.X2 = int32(x2)
-					box.Y2 = int32(y2)
-				}
-				if i < len(catMatches) && len(catMatches[i]) >= 2 {
-					box.Label = catMatches[i][1]
-				}
-				if i < len(confMatches) && len(confMatches[i]) >= 2 {
-					box.Confidence = confMatches[i][1]
 				}
 				boxes = append(boxes, box)
 			}
@@ -544,6 +486,74 @@ func parseDetectionResult(content string) (*model.Detection, string, string) {
 			AnalyzedAt:  common.NowFormatted(),
 		}, status, ""
 	}
+
+	// JSON 解析失败，尝试正则降级
+	slog.Warn("LLM 返回 JSON 解析失败，尝试正则降级", "content", content)
+
+	// 正则提取 detected_flag
+	flagRe := regexp.MustCompile(`"detected_flag"\s*:\s*(true|false)`)
+	flagMatch := flagRe.FindStringSubmatch(content)
+
+	// 正则提取 bbox_2d
+	bboxRe := regexp.MustCompile(`"bbox_2d"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]`)
+	bboxMatches := bboxRe.FindAllStringSubmatch(content, -1)
+
+	// 正则提取 category
+	catRe := regexp.MustCompile(`"category"\s*:\s*"([^"]*)"`)
+	catMatches := catRe.FindAllStringSubmatch(content, -1)
+
+	// 正则提取 confidence_note
+	confRe := regexp.MustCompile(`"confidence_note"\s*:\s*"([^"]*)"`)
+	confMatches := confRe.FindAllStringSubmatch(content, -1)
+
+	var detected bool
+	if len(flagMatch) >= 2 {
+		detected = flagMatch[1] == "true"
+	} else {
+		// 无 detected_flag 时，根据是否有 detections 推断
+		detected = len(bboxMatches) > 0 || len(catMatches) > 0
+	}
+
+	boxes := make([]model.Box, 0)
+	if detected {
+		maxLen := len(bboxMatches)
+		if len(catMatches) > maxLen {
+			maxLen = len(catMatches)
+		}
+
+		for i := 0; i < maxLen; i++ {
+			box := model.Box{}
+			if i < len(bboxMatches) && len(bboxMatches[i]) >= 5 {
+				x1, _ := strconv.ParseInt(bboxMatches[i][1], 10, 32)
+				y1, _ := strconv.ParseInt(bboxMatches[i][2], 10, 32)
+				x2, _ := strconv.ParseInt(bboxMatches[i][3], 10, 32)
+				y2, _ := strconv.ParseInt(bboxMatches[i][4], 10, 32)
+				box.X1 = int32(x1)
+				box.Y1 = int32(y1)
+				box.X2 = int32(x2)
+				box.Y2 = int32(y2)
+			}
+			if i < len(catMatches) && len(catMatches[i]) >= 2 {
+				box.Label = catMatches[i][1]
+			}
+			if i < len(confMatches) && len(confMatches[i]) >= 2 {
+				box.Confidence = confMatches[i][1]
+			}
+			boxes = append(boxes, box)
+		}
+	}
+
+	status := "NotDetected"
+	if detected {
+		status = "Detected"
+	}
+
+	return &model.Detection{
+		HasTarget:   detected,
+		Boxes:       boxes,
+		RawResponse: content,
+		AnalyzedAt:  common.NowFormatted(),
+	}, status, ""
 
 	// 正则也无法提取 flag
 	slog.Error("无法解析检测结果", "content", content)

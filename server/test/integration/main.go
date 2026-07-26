@@ -465,6 +465,45 @@ func doChunkUpload(url, uploadId string, chunkIndex int32, chunkData []byte) *ap
 	return &apiResp
 }
 
+// doSingleFileUpload 上传单个文件（字段名为 "file"）
+func doSingleFileUpload(url, filePath string) *apiResponse {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("  << 打开文件失败: %s, %s\n", filePath, err)
+		return &apiResponse{ErrorCode: -1, ErrorMsg: err.Error()}
+	}
+	part, _ := writer.CreateFormFile("file", filepath.Base(filePath))
+	io.Copy(part, file)
+	file.Close()
+	writer.Close()
+
+	stat, _ := os.Stat(filePath)
+	fmt.Printf("  >> POST %s (single file, %s, %d bytes)\n", url, filepath.Base(filePath), stat.Size())
+
+	req, _ := http.NewRequest("POST", url, &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("  << 请求失败: %s\n", err)
+		return &apiResponse{ErrorCode: -1, ErrorMsg: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	fmt.Printf("  << HTTP %d\n", resp.StatusCode)
+
+	var apiResp apiResponse
+	json.Unmarshal(bodyBytes, &apiResp)
+
+	pretty, _ := json.MarshalIndent(apiResp, "  ", "  ")
+	fmt.Printf("  << %s\n", string(pretty))
+	return &apiResp
+}
+
 func testDataDir() string {
 	dir, _ := os.Getwd()
 	if filepath.Base(dir) == "integration" {

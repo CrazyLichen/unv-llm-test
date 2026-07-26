@@ -17,9 +17,11 @@ import (
 // ──────────────────────────── 任务管理测试状态 ────────────────────────────
 
 var (
-	taskAPIPrefix = fmt.Sprintf("http://localhost:%d/api/tasks", serverPort)
-	imageTaskID   string
-	videoTaskID   string
+	taskAPIPrefix      = fmt.Sprintf("http://localhost:%d/api/tasks", serverPort)
+	imageTaskID        string
+	videoTaskID        string
+	missedPhotoImageID string
+	correctionImageID  string
 )
 
 // ──────────────────────────── 测试注册 ────────────────────────────
@@ -44,13 +46,24 @@ func getTaskTests() []testCase {
 
 		// Failed任务恢复
 		{"Failed任务恢复", "创建空素材库任务使其Failed", "创建一个空图片素材库，用其创建Image任务，因无素材导致任务Failed", "任务状态=Failed，FailReason非空", testCreateFailedTask},
-		{"Failed任务恢复", "恢复Failed任务", "恢复Failed任务，验证状态变为Analyzing，FailReason被清除，Worker重新入队执行", "状态变为Analyzing/Completed，FailReason=nil，Worker重新工作", testResumeFailedTask},
+		{"Failed任务恢复", "恢复Failed任务", "恢复Failed任务，验证Worker重新入队执行", "API返回成功，Worker重新执行后再次Failed(空素材库)", testResumeFailedTask},
 		{"Failed任务恢复", "清理Failed恢复测试数据", "删除恢复测试产生的任务和素材库", "任务和素材库均已删除", testCleanupFailedTaskData},
+
+		// 恢复续跑验证
+		{"恢复续跑验证", "创建任务并暂停-验证续跑", "创建多图任务，暂停后恢复，验证从上次已完成image后继续分析，不重复处理", "暂停时已完成数<恢复后完成数=Total，无重复处理", testResumeContinuesFromLastImage},
 
 		// 视频任务 - 抽帧检测完整流程
 		{"任务管理-视频检测", "创建视频类型任务", "使用已有模型配置和视频素材库创建视频检测任务", "创建成功，任务ID非空", testCreateVideoTask},
 		{"任务管理-视频检测", "验证视频抽帧结果", "检查帧文件实际存在于磁盘且可访问，DB中Image记录包含FrameIndex和AccessUrl", "帧目录有jpg文件，帧图片可通过HTTP访问，DB记录与磁盘一致", testVerifyVideoFrames},
 		{"任务管理-视频检测", "验证视频帧检测结果", "轮询等待视频任务完成，通过任务详情验证所有帧有检测结果，Detection JSON非空", "任务Completed，所有帧非Pending，Detection内容非空", testVerifyVideoDetectionResults},
+
+		// 任务结果领域
+		{"任务结果领域", "查询图片任务分析结果", "分页查询已完成图片任务的素材检测结果，验证返回包含 Detection 字段", "Total>=2，Items 非空，Detection 字段有值", testListTaskImages},
+		{"任务结果领域", "按状态筛选素材", "查询图片任务中 Status=Detected 的素材，验证筛选生效", "返回结果全部为 Detected 状态", testListImagesByStatus},
+		{"任务结果领域", "补录漏报照片", "向已完成的图片任务上传一张补录照片，验证创建成功且列表体现", "上传成功，素材列表 Total 增加", testUploadMissedPhoto},
+		{"任务结果领域", "标记素材误报", "将一个 Detected 素材标记为 FalsePositive，验证 Progress 统计自动调整", "FalsePositive 计数增加，TruePositive 减少", testMarkFalsePositive},
+		{"任务结果领域", "删除误报素材", "将 FalsePositive 素材标记为 DeletedFp，验证默认列表不返回", "DeletedFp 素材不在默认列表中", testMarkDeletedFp},
+		{"任务结果领域", "恢复误报素材", "将 DeletedFp 素材恢复为正常（Correction=null），验证 Progress 恢复", "素材恢复正常，Progress 统计恢复", testRestoreCorrection},
 
 		// 异常场景
 		{"任务异常场景", "类型不匹配校验", "使用图片素材库创建Video任务", "返回非零ErrorCode，提示类型不匹配", testTaskTypeMismatch},
@@ -912,6 +925,190 @@ func testCleanupFailedTaskData() testResult {
 	return pass("Failed恢复测试数据清理完成")
 }
 
+// ──────────────────────────── 恢复盘跑验证 ────────────────────────────
+
+var (
+	continueTestLibID string
+	continueTaskID    string
+	// 记录暂停时的进度快照，用于续跑验证
+	pausedSnapshot struct {
+		Total     int
+		Completed int
+		Pending   int
+	}
+)
+
+func testResumeContinuesFromLastImage() testResult {
+	if createdMcID == "" {
+		return skip("没有已创建的模型配置")
+	}
+
+	// 创建一个新的图片素材库
+	libResp := doJSON("POST", apiPrefix, map[string]interface{}{
+		"Name":        "续跑验证图片库",
+		"Type":        "Image",
+		"Description": "用于验证恢复后从上次已完成image后继续分析",
+	})
+	if libResp.ErrorCode != 0 {
+		return failf("创建素材库失败: ErrorCode=%d, ErrorMsg=%s", libResp.ErrorCode, libResp.ErrorMsg)
+	}
+	var lib model.MaterialLibrary
+	json.Unmarshal(libResp.Data, &lib)
+	continueTestLibID = lib.Id
+
+	// 上传图片（3张以上）
+	imgFiles := findTestImages()
+	if len(imgFiles) == 0 {
+		return skip("没有测试图片可上传")
+	}
+	uploadResp := doMultipart(apiPrefix+"/"+continueTestLibID+"/images", imgFiles)
+	if uploadResp.ErrorCode != 0 {
+		return failf("上传图片失败: ErrorCode=%d, ErrorMsg=%s", uploadResp.ErrorCode, uploadResp.ErrorMsg)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// 创建任务
+	taskResp := doJSON("POST", taskAPIPrefix, map[string]interface{}{
+		"Name":              "续跑验证任务",
+		"Type":              "Image",
+		"ModelConfigId":     createdMcID,
+		"MaterialLibraryId": continueTestLibID,
+		"Prompt":            "请分析这张图片中是否存在目标。",
+		"Target":            "测试目标",
+	})
+	if taskResp.ErrorCode != 0 {
+		return failf("创建任务失败: ErrorCode=%d, ErrorMsg=%s", taskResp.ErrorCode, taskResp.ErrorMsg)
+	}
+
+	// 获取任务ID
+	time.Sleep(300 * time.Millisecond)
+	listResp := doJSON("GET", taskAPIPrefix+"?Page=1&PageSize=20", nil)
+	continueTaskID = findTaskIDByPrefix(listResp.Data, "续跑验证任务")
+	if continueTaskID == "" {
+		return fail("无法获取续跑验证任务ID")
+	}
+
+	// 等待Worker开始处理，然后立即暂停（争取在部分图片完成时暂停）
+	time.Sleep(2 * time.Second)
+
+	// 尝试暂停
+	pauseResp := doJSON("PUT", taskAPIPrefix+"/"+continueTaskID, map[string]interface{}{
+		"Status": "Paused",
+	})
+
+	// 如果任务已经完成（图片少时可能很快），则直接验证
+	if pauseResp.ErrorCode != 0 {
+		// 任务可能已完成，无法暂停，跳过续跑验证
+		getResp := doJSON("GET", taskAPIPrefix+"?Id="+continueTaskID, nil)
+		item := parseFirstTaskItem(getResp.Data)
+		if item != nil && item.Status == "Completed" {
+			// 清理
+			doJSON("DELETE", taskAPIPrefix+"/"+continueTaskID, nil)
+			doJSON("DELETE", apiPrefix+"/"+continueTestLibID, nil)
+			continueTestLibID = ""
+			continueTaskID = ""
+			return skip("任务已快速完成，无法测试暂停续跑")
+		}
+		return failf("暂停任务失败: ErrorCode=%d, ErrorMsg=%s", pauseResp.ErrorCode, pauseResp.ErrorMsg)
+	}
+
+	// 记录暂停时的进度
+	time.Sleep(500 * time.Millisecond)
+	getResp := doJSON("GET", taskAPIPrefix+"?Id="+continueTaskID, nil)
+	item := parseFirstTaskItem(getResp.Data)
+	if item == nil {
+		return fail("解析暂停后的任务项失败")
+	}
+	if item.Status != "Paused" {
+		return failf("暂停后状态不为Paused: %s", item.Status)
+	}
+
+	pausedSnapshot.Total = item.Progress.Total
+	pausedSnapshot.Completed = item.Progress.Completed
+	pausedSnapshot.Pending = item.Progress.Pending
+
+	fmt.Printf("  [INFO] 暂停时进度: Total=%d, Completed=%d, Pending=%d\n",
+		pausedSnapshot.Total, pausedSnapshot.Completed, pausedSnapshot.Pending)
+
+	// 等待3秒确认Worker已停止
+	time.Sleep(3 * time.Second)
+	checkResp := doJSON("GET", taskAPIPrefix+"?Id="+continueTaskID, nil)
+	checkItem := parseFirstTaskItem(checkResp.Data)
+	if checkItem != nil && checkItem.Progress.Completed > pausedSnapshot.Completed {
+		return failf("暂停后进度仍在增长: 暂停时Completed=%d, 3秒后Completed=%d",
+			pausedSnapshot.Completed, checkItem.Progress.Completed)
+	}
+
+	// 恢复任务
+	resumeResp := doJSON("PUT", taskAPIPrefix+"/"+continueTaskID, map[string]interface{}{
+		"Status": "Analyzing",
+	})
+	if resumeResp.ErrorCode != 0 {
+		return failf("恢复任务失败: ErrorCode=%d, ErrorMsg=%s", resumeResp.ErrorCode, resumeResp.ErrorMsg)
+	}
+
+	// 轮询等待完成
+	maxWait := 180
+	for i := 0; i < maxWait; i++ {
+		resp := doJSON("GET", taskAPIPrefix+"?Id="+continueTaskID, nil)
+		checkItem := parseFirstTaskItem(resp.Data)
+		if checkItem == nil {
+			return fail("解析任务项失败")
+		}
+
+		if checkItem.Status == "Completed" {
+			// 核心验证1：最终Completed == Total（所有素材都被处理）
+			if checkItem.Progress.Completed != checkItem.Progress.Total {
+				return failf("完成后Completed(%d) != Total(%d)", checkItem.Progress.Completed, checkItem.Progress.Total)
+			}
+
+			// 核心验证2：Total未变化（没有重新创建Image记录）
+			if checkItem.Progress.Total != pausedSnapshot.Total {
+				return failf("Total发生变化: 暂停时=%d, 完成后=%d, 可能有Image被重复创建",
+					pausedSnapshot.Total, checkItem.Progress.Total)
+			}
+
+			// 核心验证3：恢复后确实处理了剩余的Pending素材
+			newlyCompleted := checkItem.Progress.Completed - pausedSnapshot.Completed
+			if newlyCompleted == 0 && pausedSnapshot.Pending > 0 {
+				return failf("恢复后没有新素材被处理: 暂停时Completed=%d, 完成后Completed=%d, 暂停时Pending=%d",
+					pausedSnapshot.Completed, checkItem.Progress.Completed, pausedSnapshot.Pending)
+			}
+
+			// 核心验证4：已完成的素材没有被重新处理
+			// 暂停时已完成的素材数 + 恢复后新完成的素材数 = 最终完成总数
+			// newlyCompleted 应 <= pausedSnapshot.Pending (只处理了Pending的素材)
+			if newlyCompleted > pausedSnapshot.Pending {
+				return failf("恢复后新完成数(%d) > 暂停时Pending数(%d), 可能重复处理了已完成素材",
+					newlyCompleted, pausedSnapshot.Pending)
+			}
+
+			fmt.Printf("  [INFO] 续跑验证: 暂停时Completed=%d, 最终Completed=%d, 新处理=%d(<=暂停时Pending=%d)\n",
+				pausedSnapshot.Completed, checkItem.Progress.Completed, newlyCompleted, pausedSnapshot.Pending)
+
+			// 清理
+			doJSON("DELETE", taskAPIPrefix+"/"+continueTaskID, nil)
+			doJSON("DELETE", apiPrefix+"/"+continueTestLibID, nil)
+			continueTestLibID = ""
+			continueTaskID = ""
+
+			return passf("续跑验证通过, 暂停时Completed=%d/%d, 恢复后新处理=%d, 无重复处理",
+				pausedSnapshot.Completed, pausedSnapshot.Total, newlyCompleted)
+		}
+
+		if checkItem.Status == "Paused" {
+			return fail("任务又被意外暂停")
+		}
+		if checkItem.Status == "Failed" {
+			return failf("任务变为Failed, FailReason=%v", checkItem.FailReason)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return fail("续跑验证轮询超时")
+}
+
 // ──────────────────────────── 异常场景 ────────────────────────────
 
 func testTaskTypeMismatch() testResult {
@@ -981,6 +1178,274 @@ func testTaskMaterialLibRebind() testResult {
 	doJSON("DELETE", taskAPIPrefix+"/"+newTaskID, nil)
 
 	return passf("素材库可重复绑定, 新任务ID=%s(不同于原任务%s), 已清理", newTaskID, imageTaskID)
+}
+
+// ──────────────────────────── 任务结果领域 ────────────────────────────
+
+func testListTaskImages() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	resp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Page=1&PageSize=24", nil)
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	var pageData common.PageData
+	json.Unmarshal(resp.Data, &pageData)
+
+	if pageData.Total < 2 {
+		return failf("Total=%d, 期望>=2", pageData.Total)
+	}
+
+	itemsJSON, _ := json.Marshal(pageData.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	if len(items) == 0 {
+		return fail("Items 为空")
+	}
+
+	// 验证第一条记录的字段
+	first := items[0]
+	if first.Id == "" {
+		return fail("ImageItem.Id 为空")
+	}
+	if first.TaskId != imageTaskID {
+		return failf("TaskId 不匹配: 期望=%s, 实际=%s", imageTaskID, first.TaskId)
+	}
+	if first.AccessUrl == "" {
+		return fail("AccessUrl 为空")
+	}
+	if first.Status == "" {
+		return fail("Status 为空")
+	}
+
+	// 记录一个 Detected 素材 ID 用于后续矫正测试
+	correctionImageID = ""
+	for _, item := range items {
+		if item.Status == "Detected" && item.Correction == nil {
+			correctionImageID = item.Id
+			break
+		}
+	}
+
+	return passf("查询成功, Total=%d, count=%d, 素材字段完整", pageData.Total, len(items))
+}
+
+func testListImagesByStatus() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	resp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Page=1&PageSize=24&Status=Detected", nil)
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	var pageData common.PageData
+	json.Unmarshal(resp.Data, &pageData)
+
+	if pageData.Total == 0 {
+		return pass("没有 Detected 素材（可能全部 NotDetected）")
+	}
+
+	itemsJSON, _ := json.Marshal(pageData.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	for _, item := range items {
+		if item.Status != "Detected" {
+			return failf("筛选失败: 存在非 Detected 状态的素材, Status=%s", item.Status)
+		}
+	}
+
+	return passf("筛选成功, Total=%d, 全部为 Detected", pageData.Total)
+}
+
+func testUploadMissedPhoto() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+
+	// 查询当前 Total
+	beforeResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Page=1&PageSize=1", nil)
+	var beforePage common.PageData
+	json.Unmarshal(beforeResp.Data, &beforePage)
+	beforeTotal := beforePage.Total
+
+	// 上传一张测试图片
+	imgFiles := findTestImages()
+	if len(imgFiles) == 0 {
+		return skip("没有测试图片可上传")
+	}
+
+	uploadResp := doMultipart(taskAPIPrefix+"/"+imageTaskID+"/images", []string{imgFiles[0]})
+	if uploadResp.ErrorCode != 0 {
+		return failf("补录照片失败: ErrorCode=%d, ErrorMsg=%s", uploadResp.ErrorCode, uploadResp.ErrorMsg)
+	}
+
+	// 查询更新后的 Total
+	time.Sleep(500 * time.Millisecond)
+	afterResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Page=1&PageSize=100", nil)
+	var afterPage common.PageData
+	json.Unmarshal(afterResp.Data, &afterPage)
+
+	if afterPage.Total <= beforeTotal {
+		return failf("补录后 Total 未增加: before=%d, after=%d", beforeTotal, afterPage.Total)
+	}
+
+	// 查找补录的照片（Status=Detected, Detection=null）
+	itemsJSON, _ := json.Marshal(afterPage.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	for _, item := range items {
+		if item.Status == "Detected" && item.Detection == nil {
+			missedPhotoImageID = item.Id
+			break
+		}
+	}
+
+	if missedPhotoImageID == "" {
+		return fail("补录照片未在列表中找到")
+	}
+
+	return passf("补录成功, Total: %d -> %d, 补录照片ID=%s", beforeTotal, afterPage.Total, missedPhotoImageID)
+}
+
+func testMarkFalsePositive() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+	if correctionImageID == "" {
+		return skip("没有可用于矫正测试的 Detected 素材")
+	}
+
+	// 标记误报
+	resp := doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": "FalsePositive",
+	})
+	if resp.ErrorCode != 0 {
+		return failf("标记误报失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	// 查询任务进度验证 FalsePositive 增加
+	taskResp := doJSON("GET", taskAPIPrefix+"?Id="+imageTaskID, nil)
+	item := parseFirstTaskItem(taskResp.Data)
+	if item == nil {
+		return fail("解析任务项失败")
+	}
+
+	if item.Progress.CompletedDetail.DetectedDetail.FalsePositive == 0 {
+		return fail("标记误报后 FalsePositive 仍为 0")
+	}
+
+	// 验证素材列表中该素材的 Correction 字段
+	imgResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?ImageId="+correctionImageID, nil)
+	var imgPage common.PageData
+	json.Unmarshal(imgResp.Data, &imgPage)
+	imgItemsJSON, _ := json.Marshal(imgPage.Items)
+	var imgItems []model.ImageItem
+	json.Unmarshal(imgItemsJSON, &imgItems)
+
+	if len(imgItems) == 0 {
+		return fail("查询矫正素材失败")
+	}
+	if imgItems[0].Correction == nil || *imgItems[0].Correction != "FalsePositive" {
+		return fail("素材 Correction 字段不为 FalsePositive")
+	}
+
+	return passf("标记误报成功, FalsePositive=%d", item.Progress.CompletedDetail.DetectedDetail.FalsePositive)
+}
+
+func testMarkDeletedFp() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+	if correctionImageID == "" {
+		return skip("没有可用于矫正测试的素材")
+	}
+
+	// 标记为 DeletedFp
+	resp := doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": "DeletedFp",
+	})
+	if resp.ErrorCode != 0 {
+		return failf("删除误报失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	// 默认列表不应包含 DeletedFp 素材
+	listResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Page=1&PageSize=100", nil)
+	var pageData common.PageData
+	json.Unmarshal(listResp.Data, &pageData)
+
+	itemsJSON, _ := json.Marshal(pageData.Items)
+	var items []model.ImageItem
+	json.Unmarshal(itemsJSON, &items)
+
+	for _, item := range items {
+		if item.Id == correctionImageID {
+			return fail("DeletedFp 素材仍出现在默认列表中")
+		}
+	}
+
+	// 通过 Correction=DeletedFp 筛选可以查到
+	fpResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?Correction=DeletedFp&Page=1&PageSize=100", nil)
+	var fpPage common.PageData
+	json.Unmarshal(fpResp.Data, &fpPage)
+
+	if fpPage.Total == 0 {
+		return fail("通过 Correction=DeletedFp 筛选不到已删除误报素材")
+	}
+
+	return passf("删除误报成功, 默认列表已过滤, DeletedFp 筛选 Total=%d", fpPage.Total)
+}
+
+func testRestoreCorrection() testResult {
+	if imageTaskID == "" {
+		return skip("没有已创建的图片任务")
+	}
+	if correctionImageID == "" {
+		return skip("没有可用于矫正测试的素材")
+	}
+
+	// 恢复正常（Correction = null）
+	resp := doJSON("PUT", taskAPIPrefix+"/"+imageTaskID+"/images/"+correctionImageID, map[string]interface{}{
+		"Correction": nil,
+	})
+	if resp.ErrorCode != 0 {
+		return failf("恢复矫正失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+
+	// 验证素材恢复出现在默认列表中
+	imgResp := doJSON("GET", taskAPIPrefix+"/"+imageTaskID+"/images?ImageId="+correctionImageID, nil)
+	var imgPage common.PageData
+	json.Unmarshal(imgResp.Data, &imgPage)
+	imgItemsJSON, _ := json.Marshal(imgPage.Items)
+	var imgItems []model.ImageItem
+	json.Unmarshal(imgItemsJSON, &imgItems)
+
+	if len(imgItems) == 0 {
+		return fail("恢复后素材仍不在默认列表中")
+	}
+	if imgItems[0].Correction != nil {
+		return failf("恢复后 Correction 不为 null: %s", *imgItems[0].Correction)
+	}
+
+	// 验证 Progress 恢复
+	taskResp := doJSON("GET", taskAPIPrefix+"?Id="+imageTaskID, nil)
+	item := parseFirstTaskItem(taskResp.Data)
+	if item == nil {
+		return fail("解析任务项失败")
+	}
+
+	if item.Progress.CompletedDetail.DetectedDetail.TruePositive == 0 {
+		return fail("恢复后 TruePositive 为 0")
+	}
+
+	return passf("恢复成功, Correction=null, TruePositive=%d", item.Progress.CompletedDetail.DetectedDetail.TruePositive)
 }
 
 // ──────────────────────────── 辅助函数 ────────────────────────────

@@ -131,7 +131,7 @@ func main() {
 	}
 	fmt.Printf("[SETUP] 服务已启动: %s\n\n", baseURL)
 
-	tests := append(getModelConfigAndLLMTests(), getMaterialLibraryTests()...)
+	tests := append(append(getModelConfigAndLLMTests(), getMaterialLibraryTests()...), getTaskTests()...)
 
 	// 执行所有测试用例，收集结果
 	var results []caseResult
@@ -325,7 +325,6 @@ func startServer() (func(), error) {
 	taskCtrl := controller.NewTaskController(taskSvc)
 
 	scheduler.Start()
-	defer scheduler.Stop()
 
 	r := gin.Default()
 	controller.SetupRouter(r, mcCtrl, mlCtrl, taskCtrl, cfg.Upload.Dir)
@@ -334,7 +333,9 @@ func startServer() (func(), error) {
 		r.Run(fmt.Sprintf(":%d", serverPort))
 	}()
 
-	return func() {}, nil
+	return func() {
+		scheduler.Stop()
+	}, nil
 }
 
 func waitForServer() bool {

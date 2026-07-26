@@ -70,9 +70,11 @@ func (s *ModelConfigService) Create(ctx context.Context, req *model.CreateModelC
 func (s *ModelConfigService) GetByID(ctx context.Context, id string) (*model.ModelConfig, error) {
 	mc, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询模型配置失败", "id", id, "error", err)
 		return nil, err
 	}
 	if mc == nil {
+		slog.Warn("模型配置不存在", "id", id)
 		return nil, common.ErrModelConfigNotFound
 	}
 	mc.ApiKey = common.MaskApiKey(mc.ApiKey)
@@ -83,6 +85,7 @@ func (s *ModelConfigService) GetByID(ctx context.Context, id string) (*model.Mod
 func (s *ModelConfigService) List(ctx context.Context, page, pageSize int) ([]model.ModelConfig, int, error) {
 	items, total, err := s.repo.List(ctx, page, pageSize)
 	if err != nil {
+		slog.Error("查询模型配置列表失败", "page", page, "pageSize", pageSize, "error", err)
 		return nil, 0, err
 	}
 	// ApiKey 脱敏
@@ -97,9 +100,11 @@ func (s *ModelConfigService) Update(ctx context.Context, id string, req *model.U
 	// 检查是否存在
 	mc, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询模型配置失败", "id", id, "error", err)
 		return err
 	}
 	if mc == nil {
+		slog.Warn("更新模型配置不存在", "id", id)
 		return common.ErrModelConfigNotFound
 	}
 
@@ -120,15 +125,18 @@ func (s *ModelConfigService) Delete(ctx context.Context, id string) error {
 	// 检查是否存在
 	mc, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询模型配置失败", "id", id, "error", err)
 		return err
 	}
 	if mc == nil {
+		slog.Warn("删除模型配置不存在", "id", id)
 		return common.ErrModelConfigNotFound
 	}
 
 	// 检查是否有关联任务
 	hasRelated, err := s.repo.HasRelatedTasks(ctx, id)
 	if err != nil {
+		slog.Error("检查模型配置关联任务失败", "id", id, "error", err)
 		return err
 	}
 	if hasRelated {
@@ -152,9 +160,11 @@ func (s *ModelConfigService) Delete(ctx context.Context, id string) error {
 func (s *ModelConfigService) TestConnectivity(ctx context.Context, id string) (*model.TestModelConfigResp, error) {
 	mc, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询模型配置失败", "id", id, "error", err)
 		return nil, err
 	}
 	if mc == nil {
+		slog.Warn("测试连通性模型配置不存在", "id", id)
 		return nil, common.ErrModelConfigNotFound
 	}
 
@@ -166,6 +176,7 @@ func (s *ModelConfigService) TestConnectivity(ctx context.Context, id string) (*
 		MaxTokens:   mc.MaxTokens,
 	})
 	if err != nil {
+		slog.Error("模型连通性测试失败", "id", id, "modelId", mc.ModelId, "error", err)
 		return nil, err
 	}
 

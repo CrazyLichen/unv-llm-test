@@ -82,9 +82,11 @@ func (s *MaterialLibraryService) Create(ctx context.Context, req *model.CreateMa
 func (s *MaterialLibraryService) GetByID(ctx context.Context, id string) (*model.MaterialLibrary, error) {
 	ml, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询素材库失败", "id", id, "error", err)
 		return nil, err
 	}
 	if ml == nil {
+		slog.Warn("素材库不存在", "id", id)
 		return nil, common.ErrMaterialLibNotFound
 	}
 	return ml, nil
@@ -99,12 +101,15 @@ func (s *MaterialLibraryService) List(ctx context.Context, page, pageSize int, l
 func (s *MaterialLibraryService) Update(ctx context.Context, id string, req *model.UpdateMaterialLibraryReq) error {
 	ml, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询素材库失败", "id", id, "error", err)
 		return err
 	}
 	if ml == nil {
+		slog.Warn("更新素材库不存在", "id", id)
 		return common.ErrMaterialLibNotFound
 	}
 	if err := s.repo.Update(ctx, id, req); err != nil {
+		slog.Error("更新素材库失败", "id", id, "error", err)
 		return err
 	}
 	slog.Info("更新素材库成功", "id", id)
@@ -115,24 +120,29 @@ func (s *MaterialLibraryService) Update(ctx context.Context, id string, req *mod
 func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 	ml, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询素材库失败", "id", id, "error", err)
 		return err
 	}
 	if ml == nil {
+		slog.Warn("删除素材库不存在", "id", id)
 		return common.ErrMaterialLibNotFound
 	}
 
 	// 检查是否有关联任务
 	hasRelated, err := s.repo.HasRelatedTasks(ctx, id)
 	if err != nil {
+		slog.Error("检查素材库关联任务失败", "id", id, "error", err)
 		return err
 	}
 	if hasRelated {
+		slog.Warn("素材库已被任务关联，无法删除", "id", id)
 		return common.ErrMaterialLibBound
 	}
 
 	// 查询所有文件记录
 	files, _, err := s.repo.ListFiles(ctx, id, 1, 10000, "")
 	if err != nil {
+		slog.Error("查询素材库文件列表失败", "id", id, "error", err)
 		return err
 	}
 
@@ -157,6 +167,7 @@ func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 	s.removeEmptyParentDirs(filepath.Dir(libDir))
 
 	if err := s.repo.Delete(ctx, id); err != nil {
+		slog.Error("删除素材库记录失败", "id", id, "error", err)
 		return err
 	}
 
@@ -168,12 +179,15 @@ func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 func (s *MaterialLibraryService) UploadImages(ctx context.Context, libraryId string, form *gin.Context) (*model.UploadImageResp, error) {
 	ml, err := s.repo.GetByID(ctx, libraryId)
 	if err != nil {
+		slog.Error("查询素材库失败", "libraryId", libraryId, "error", err)
 		return nil, err
 	}
 	if ml == nil {
+		slog.Warn("上传图片素材库不存在", "libraryId", libraryId)
 		return nil, common.ErrMaterialLibNotFound
 	}
 	if ml.Type != "Image" {
+		slog.Warn("素材库类型不匹配", "libraryId", libraryId, "type", ml.Type)
 		return nil, common.ErrLibTypeMismatch
 	}
 
@@ -260,6 +274,7 @@ func (s *MaterialLibraryService) UploadImages(ctx context.Context, libraryId str
 
 		if err := s.repo.CreateFile(ctx, mf); err != nil {
 			os.Remove(fullPath)
+			slog.Error("保存素材文件记录失败", "fileName", fh.Filename, "error", err)
 			continue
 		}
 
@@ -282,27 +297,33 @@ func (s *MaterialLibraryService) UploadImages(ctx context.Context, libraryId str
 func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId string, req *model.InitVideoUploadReq) (*model.InitVideoUploadResp, error) {
 	ml, err := s.repo.GetByID(ctx, libraryId)
 	if err != nil {
+		slog.Error("查询素材库失败", "libraryId", libraryId, "error", err)
 		return nil, err
 	}
 	if ml == nil {
+		slog.Warn("初始化视频上传素材库不存在", "libraryId", libraryId)
 		return nil, common.ErrMaterialLibNotFound
 	}
 	if ml.Type != "Video" {
+		slog.Warn("素材库类型不匹配", "libraryId", libraryId, "type", ml.Type)
 		return nil, common.ErrLibTypeMismatch
 	}
 
 	// 检查同名已完成或合并中的文件
 	existing, err := s.repo.FindCompletedOrMergingFileByName(ctx, libraryId, req.FileName)
 	if err != nil {
+		slog.Error("检查同名视频文件失败", "libraryId", libraryId, "fileName", req.FileName, "error", err)
 		return nil, err
 	}
 	if existing != nil {
+		slog.Warn("同名视频文件已存在", "libraryId", libraryId, "fileName", req.FileName)
 		return nil, common.NewErrParamValidation("同名视频文件已存在")
 	}
 
 	// 断点续传：检查同名上传中的文件
 	existingUploading, err := s.repo.FindUploadingFileByName(ctx, libraryId, req.FileName)
 	if err != nil {
+		slog.Error("检查断点续传文件失败", "libraryId", libraryId, "fileName", req.FileName, "error", err)
 		return nil, err
 	}
 	if existingUploading != nil && existingUploading.UploadId != nil {
@@ -358,6 +379,7 @@ func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId 
 	}
 
 	if err := s.repo.CreateFile(ctx, mf); err != nil {
+		slog.Error("创建视频文件记录失败", "libraryId", libraryId, "fileName", req.FileName, "error", err)
 		return nil, err
 	}
 
@@ -378,12 +400,15 @@ func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId 
 func (s *MaterialLibraryService) UploadChunk(ctx context.Context, uploadId string, chunkIndex int32, fileHeader *multipart.FileHeader) error {
 	mf, err := s.repo.GetFileByUploadId(ctx, uploadId)
 	if err != nil {
+		slog.Error("查询上传文件失败", "uploadId", uploadId, "error", err)
 		return err
 	}
 	if mf == nil {
+		slog.Warn("无效的上传标识", "uploadId", uploadId)
 		return common.NewErrParamValidation("无效的上传标识")
 	}
 	if mf.UploadStatus != "Uploading" {
+		slog.Warn("文件不在上传中状态", "uploadId", uploadId, "status", mf.UploadStatus)
 		return common.NewErrParamValidation("文件不在上传中状态")
 	}
 
@@ -429,17 +454,21 @@ func (s *MaterialLibraryService) UploadChunk(ctx context.Context, uploadId strin
 func (s *MaterialLibraryService) CompleteVideoUpload(ctx context.Context, uploadId string) error {
 	mf, err := s.repo.GetFileByUploadId(ctx, uploadId)
 	if err != nil {
+		slog.Error("查询上传文件失败", "uploadId", uploadId, "error", err)
 		return err
 	}
 	if mf == nil {
+		slog.Warn("完成上传标识无效", "uploadId", uploadId)
 		return common.NewErrParamValidation("无效的上传标识")
 	}
 	if mf.UploadStatus != "Uploading" {
+		slog.Warn("文件不在上传中状态", "uploadId", uploadId, "status", mf.UploadStatus)
 		return common.NewErrParamValidation("文件不在上传中状态")
 	}
 
 	// 校验所有分片是否已上传完毕
 	if mf.TotalChunks != nil && mf.UploadedChunks != nil && *mf.UploadedChunks < *mf.TotalChunks {
+		slog.Warn("分片未全部上传完毕", "uploadId", uploadId, "uploaded", *mf.UploadedChunks, "total", *mf.TotalChunks)
 		return common.NewErrChunkUploadFailed(fmt.Sprintf("分片未全部上传完毕 (%d/%d)", *mf.UploadedChunks, *mf.TotalChunks))
 	}
 
@@ -461,14 +490,17 @@ func (s *MaterialLibraryService) CompleteVideoUpload(ctx context.Context, upload
 func (s *MaterialLibraryService) ListFiles(ctx context.Context, libraryId string, page, pageSize int, uploadStatus string) ([]model.MaterialFileProgress, int, error) {
 	ml, err := s.repo.GetByID(ctx, libraryId)
 	if err != nil {
+		slog.Error("查询素材库失败", "libraryId", libraryId, "error", err)
 		return nil, 0, err
 	}
 	if ml == nil {
+		slog.Warn("查询文件列表素材库不存在", "libraryId", libraryId)
 		return nil, 0, common.ErrMaterialLibNotFound
 	}
 
 	files, total, err := s.repo.ListFiles(ctx, libraryId, page, pageSize, uploadStatus)
 	if err != nil {
+		slog.Error("查询素材文件列表失败", "libraryId", libraryId, "error", err)
 		return nil, 0, err
 	}
 
@@ -484,26 +516,32 @@ func (s *MaterialLibraryService) ListFiles(ctx context.Context, libraryId string
 func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId string, fileId string) error {
 	ml, err := s.repo.GetByID(ctx, libraryId)
 	if err != nil {
+		slog.Error("查询素材库失败", "libraryId", libraryId, "error", err)
 		return err
 	}
 	if ml == nil {
+		slog.Warn("删除文件素材库不存在", "libraryId", libraryId)
 		return common.ErrMaterialLibNotFound
 	}
 
 	// 检查素材库是否已关联任务
 	hasRelated, err := s.repo.HasRelatedTasks(ctx, libraryId)
 	if err != nil {
+		slog.Error("检查素材库关联任务失败", "libraryId", libraryId, "error", err)
 		return err
 	}
 	if hasRelated {
+		slog.Warn("素材库已被任务关联，无法删除文件", "libraryId", libraryId)
 		return common.ErrMaterialLibBound
 	}
 
 	mf, err := s.repo.GetFileByID(ctx, fileId)
 	if err != nil {
+		slog.Error("查询素材文件失败", "fileId", fileId, "error", err)
 		return err
 	}
 	if mf == nil || mf.LibraryId != libraryId {
+		slog.Warn("素材文件不存在或不属于该素材库", "fileId", fileId, "libraryId", libraryId)
 		return common.ErrMaterialFileNotFound
 	}
 
@@ -517,6 +555,7 @@ func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId strin
 	s.removeEmptyParentDirs(filepath.Dir(fullPath))
 
 	if err := s.repo.DeleteFile(ctx, fileId); err != nil {
+		slog.Error("删除素材文件记录失败", "fileId", fileId, "error", err)
 		return err
 	}
 

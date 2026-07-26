@@ -54,41 +54,39 @@ func (s *TaskService) Create(ctx context.Context, req *model.CreateTaskReq) erro
 	// 校验 ModelConfigId 是否存在
 	mc, err := s.mcRepo.GetByID(ctx, req.ModelConfigId)
 	if err != nil {
+		slog.Error("查询模型配置失败", "modelConfigId", req.ModelConfigId, "error", err)
 		return err
 	}
 	if mc == nil {
+		slog.Warn("模型配置不存在", "modelConfigId", req.ModelConfigId)
 		return common.ErrModelConfigNotFound
 	}
 
 	// 校验 MaterialLibraryId 是否存在
 	ml, err := s.mlRepo.GetByID(ctx, req.MaterialLibraryId)
 	if err != nil {
+		slog.Error("查询素材库失败", "materialLibraryId", req.MaterialLibraryId, "error", err)
 		return err
 	}
 	if ml == nil {
+		slog.Warn("素材库不存在", "materialLibraryId", req.MaterialLibraryId)
 		return common.ErrMaterialLibNotFound
 	}
 
 	// 校验素材库类型与任务类型一致
 	if ml.Type != req.Type {
+		slog.Warn("素材库类型与任务类型不匹配", "materialLibraryId", req.MaterialLibraryId, "libType", ml.Type, "taskType", req.Type)
 		return common.ErrLibTypeMismatch
-	}
-
-	// 校验素材库未被其他任务关联
-	existing, err := s.repo.FindByMaterialLibraryId(ctx, req.MaterialLibraryId)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return common.ErrMaterialLibBound
 	}
 
 	// 校验素材库中不存在未完成上传的文件
 	hasIncomplete, err := s.mlRepo.HasIncompleteFiles(ctx, req.MaterialLibraryId)
 	if err != nil {
+		slog.Error("检查素材库文件上传状态失败", "materialLibraryId", req.MaterialLibraryId, "error", err)
 		return err
 	}
 	if hasIncomplete {
+		slog.Warn("素材库存在未完成上传的文件", "materialLibraryId", req.MaterialLibraryId)
 		return common.ErrFileUploadIncomplete
 	}
 
@@ -136,9 +134,11 @@ func (s *TaskService) Create(ctx context.Context, req *model.CreateTaskReq) erro
 func (s *TaskService) GetByID(ctx context.Context, id string) (*model.TaskItem, error) {
 	task, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询任务失败", "id", id, "error", err)
 		return nil, err
 	}
 	if task == nil {
+		slog.Warn("任务不存在", "id", id)
 		return nil, common.ErrTaskNotFound
 	}
 	return s.toTaskItem(ctx, task)
@@ -168,9 +168,11 @@ func (s *TaskService) List(ctx context.Context, page, pageSize int, status strin
 func (s *TaskService) Delete(ctx context.Context, id string) error {
 	task, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询任务失败", "id", id, "error", err)
 		return err
 	}
 	if task == nil {
+		slog.Warn("删除任务不存在", "id", id)
 		return common.ErrTaskNotFound
 	}
 
@@ -194,6 +196,7 @@ func (s *TaskService) Delete(ctx context.Context, id string) error {
 
 	// 删除任务
 	if err := s.repo.Delete(ctx, id); err != nil {
+		slog.Error("删除任务记录失败", "id", id, "error", err)
 		return err
 	}
 
@@ -205,9 +208,11 @@ func (s *TaskService) Delete(ctx context.Context, id string) error {
 func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTaskReq) error {
 	task, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		slog.Error("查询任务失败", "id", id, "error", err)
 		return err
 	}
 	if task == nil {
+		slog.Warn("更新任务不存在", "id", id)
 		return common.ErrTaskNotFound
 	}
 
@@ -215,9 +220,11 @@ func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTa
 	case "Paused":
 		// 仅 Pending 和 Analyzing 状态可暂停
 		if task.Status != "Pending" && task.Status != "Analyzing" {
+			slog.Warn("任务状态不允许暂停", "id", id, "currentStatus", task.Status)
 			return common.ErrTaskStatusInvalid
 		}
 		if err := s.repo.UpdateStatus(ctx, id, "Paused"); err != nil {
+			slog.Error("更新任务状态为Paused失败", "id", id, "error", err)
 			return err
 		}
 		// 取消 context
@@ -227,9 +234,11 @@ func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTa
 	case "Analyzing":
 		// 仅 Paused 状态可恢复
 		if task.Status != "Paused" {
+			slog.Warn("任务状态不允许恢复", "id", id, "currentStatus", task.Status)
 			return common.ErrTaskStatusInvalid
 		}
 		if err := s.repo.UpdateStatus(ctx, id, "Analyzing"); err != nil {
+			slog.Error("更新任务状态为Analyzing失败", "id", id, "error", err)
 			return err
 		}
 		// 重新入队（创建新 context）
@@ -237,6 +246,7 @@ func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTa
 		slog.Info("恢复任务成功", "id", id)
 
 	default:
+		slog.Warn("不支持的状态更新", "id", id, "status", req.Status)
 		return common.NewErrParamValidation("不支持的状态: " + req.Status)
 	}
 
@@ -250,8 +260,11 @@ func (s *TaskService) createImageRecords(ctx context.Context, taskId string, lib
 	// 查询素材库下所有已完成的文件
 	files, _, err := s.mlRepo.ListFiles(ctx, libraryId, 1, 100000, "Completed")
 	if err != nil {
+		slog.Error("查询素材库文件失败", "libraryId", libraryId, "error", err)
 		return err
 	}
+
+	slog.Info("为任务创建图片素材记录", "taskId", taskId, "fileCount", len(files))
 
 	images := make([]model.Image, 0, len(files))
 	for _, f := range files {
@@ -270,7 +283,13 @@ func (s *TaskService) createImageRecords(ctx context.Context, taskId string, lib
 		})
 	}
 
-	return s.repo.CreateImages(ctx, images)
+	if err := s.repo.CreateImages(ctx, images); err != nil {
+		slog.Error("批量创建图片素材记录失败", "taskId", taskId, "count", len(images), "error", err)
+		return err
+	}
+
+	slog.Info("创建图片素材记录成功", "taskId", taskId, "count", len(images))
+	return nil
 }
 
 // toTaskItem 将 Task 实体转换为 TaskItem（附带关联名称和进度）

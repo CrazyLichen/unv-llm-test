@@ -64,9 +64,22 @@ func main() {
 	mlSvc := service.NewMaterialLibraryService(mlRepo, &cfg.Upload)
 	mlCtrl := controller.NewMaterialLibraryController(mlSvc)
 
+	// 初始化任务模块
+	taskRepo := repository.NewTaskRepo(db)
+	scheduler := service.NewScheduler(taskRepo, mcRepo, mlRepo, llmClient, cfg.Upload.Dir)
+	taskSvc := service.NewTaskService(taskRepo, mcRepo, mlRepo, scheduler, cfg.Upload.Dir)
+	taskCtrl := controller.NewTaskController(taskSvc)
+
+	// 启动调度器并恢复未完成任务
+	scheduler.Start()
+	scheduler.RecoverFromDB()
+
 	// 注册路由
 	r := gin.Default()
-	controller.SetupRouter(r, mcCtrl, mlCtrl, cfg.Upload.Dir)
+	controller.SetupRouter(r, mcCtrl, mlCtrl, taskCtrl, cfg.Upload.Dir)
+
+	// 优雅关闭
+	defer scheduler.Stop()
 
 	// 启动服务
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

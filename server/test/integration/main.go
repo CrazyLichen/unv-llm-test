@@ -319,8 +319,16 @@ func startServer() (func(), error) {
 	mlSvc := service.NewMaterialLibraryService(mlRepo, &cfg.Upload)
 	mlCtrl := controller.NewMaterialLibraryController(mlSvc)
 
+	taskRepo := repository.NewTaskRepo(db)
+	scheduler := service.NewScheduler(taskRepo, mcRepo, mlRepo, llmClient, cfg.Upload.Dir)
+	taskSvc := service.NewTaskService(taskRepo, mcRepo, mlRepo, scheduler, cfg.Upload.Dir)
+	taskCtrl := controller.NewTaskController(taskSvc)
+
+	scheduler.Start()
+	defer scheduler.Stop()
+
 	r := gin.Default()
-	controller.SetupRouter(r, mcCtrl, mlCtrl, cfg.Upload.Dir)
+	controller.SetupRouter(r, mcCtrl, mlCtrl, taskCtrl, cfg.Upload.Dir)
 
 	go func() {
 		r.Run(fmt.Sprintf(":%d", serverPort))

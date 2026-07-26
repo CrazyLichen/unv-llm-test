@@ -118,8 +118,8 @@ func (s *Scheduler) RecoverFromDB() {
 	}
 
 	for _, t := range tasks {
-		// 将 Analyzing 或 Failed 状态重置为 Pending（异常重启后或重试时需要重新执行）
-		if t.Status == "Analyzing" || t.Status == "Failed" {
+		// 将 Analyzing 状态重置为 Pending（异常重启后需要重新执行）
+		if t.Status == "Analyzing" {
 			s.repo.UpdateStatus(context.Background(), t.Id, "Pending")
 		}
 		s.Enqueue(t.Id)

@@ -147,10 +147,10 @@ func (r *TaskRepo) FindByModelConfigId(ctx context.Context, modelConfigId string
 	return count > 0, nil
 }
 
-// FindRecoverableTasks 查询可恢复的任务（Pending 或 Analyzing 状态）
+// FindRecoverableTasks 查询可恢复的任务（Pending 或 Analyzing 状态，Failed 需用户手动恢复）
 func (r *TaskRepo) FindRecoverableTasks(ctx context.Context) ([]model.Task, error) {
 	var tasks []model.Task
-	err := r.db.WithContext(ctx).Where("status IN ?", []string{"Pending", "Analyzing", "Failed"}).Find(&tasks).Error
+	err := r.db.WithContext(ctx).Where("status IN ?", []string{"Pending", "Analyzing"}).Find(&tasks).Error
 	if err != nil {
 		slog.Error("查询可恢复任务失败", "error", err)
 		return nil, fmt.Errorf("查询可恢复任务失败: %w", err)

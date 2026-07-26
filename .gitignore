@@ -1,0 +1,25 @@
+# 构建产物
+server/server.exe
+server/*.exe
+
+# 数据库文件
+server/data/
+
+# 工具配置
+.codebuddy/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 依赖
+server/vendor/
+
+# 环境配置（如含敏感信息）
+*.env

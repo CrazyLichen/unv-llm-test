@@ -1,0 +1,11 @@
+server:
+  port: 8080
+  mode: debug        # debug / release
+
+database:
+  driver: sqlite
+  dsn: "./data/llm-test.db"
+
+log:
+  level: info
+  format: json

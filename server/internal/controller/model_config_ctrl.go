@@ -33,7 +33,7 @@ func (ctrl *ModelConfigController) Create(c *gin.Context) {
 	var req model.CreateModelConfigReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 
@@ -97,7 +97,7 @@ func (ctrl *ModelConfigController) Update(c *gin.Context) {
 	var req model.UpdateModelConfigReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 
@@ -138,17 +138,8 @@ func (ctrl *ModelConfigController) Test(c *gin.Context) {
 
 // ──────────────────────────── 非导出函数 ────────────────────────────
 
-// handleError 统一错误处理
+// handleError 统一错误处理，err != nil 时返回 HTTP 500
 func handleError(c *gin.Context, err error) {
-	if appErr, ok := err.(*service.AppError); ok {
-		httpStatus := http.StatusBadRequest
-		if appErr.Code >= 50000 {
-			httpStatus = http.StatusInternalServerError
-		}
-		slog.Error("请求处理失败", "errorCode", appErr.Code, "errorMsg", appErr.Msg, "path", c.Request.URL.Path)
-		common.Fail(c, httpStatus, appErr.Code, appErr.Msg)
-		return
-	}
-	slog.Error("请求处理未知错误", "error", err.Error(), "path", c.Request.URL.Path)
-	common.Fail(c, http.StatusInternalServerError, common.ErrModelCallFailed, err.Error())
+	slog.Error("请求处理失败", "error", err.Error(), "path", c.Request.URL.Path)
+	common.Fail(c, http.StatusInternalServerError, common.ErrCodeServerInternal, err.Error())
 }

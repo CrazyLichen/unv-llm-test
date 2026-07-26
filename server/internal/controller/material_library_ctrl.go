@@ -33,7 +33,7 @@ func (ctrl *MaterialLibraryController) Create(c *gin.Context) {
 	var req model.CreateMaterialLibraryReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 
@@ -99,7 +99,7 @@ func (ctrl *MaterialLibraryController) Update(c *gin.Context) {
 	var req model.UpdateMaterialLibraryReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 
@@ -146,7 +146,7 @@ func (ctrl *MaterialLibraryController) InitVideoUpload(c *gin.Context) {
 	var req model.InitVideoUploadReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 
@@ -167,19 +167,19 @@ func (ctrl *MaterialLibraryController) UploadChunk(c *gin.Context) {
 	uploadId := c.PostForm("UploadId")
 	chunkIndexStr := c.PostForm("ChunkIndex")
 	if uploadId == "" || chunkIndexStr == "" {
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "UploadId 和 ChunkIndex 为必填")
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "UploadId 和 ChunkIndex 为必填")
 		return
 	}
 
 	chunkIndex, err := strconv.ParseInt(chunkIndexStr, 10, 32)
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "ChunkIndex 格式错误")
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "ChunkIndex 格式错误")
 		return
 	}
 
 	file, err := c.FormFile("file")
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "分片文件不存在")
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "分片文件不存在")
 		return
 	}
 
@@ -199,7 +199,7 @@ func (ctrl *MaterialLibraryController) CompleteVideoUpload(c *gin.Context) {
 	var req model.CompleteVideoUploadReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
-		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
+		common.Fail(c, http.StatusBadRequest, common.ErrCodeParamValidation, "参数校验失败: "+err.Error())
 		return
 	}
 

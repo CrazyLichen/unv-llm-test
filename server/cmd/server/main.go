@@ -10,6 +10,7 @@ import (
 	"llm-test-server/internal/common"
 	"llm-test-server/internal/config"
 	"llm-test-server/internal/controller"
+	"llm-test-server/internal/llm"
 	"llm-test-server/internal/repository"
 	"llm-test-server/internal/service"
 )
@@ -51,7 +52,12 @@ func main() {
 
 	// 初始化各层
 	mcRepo := repository.NewModelConfigRepo(db)
-	mcSvc := service.NewModelConfigService(mcRepo)
+
+	// 初始化 LLM 模块
+	llmFactory := llm.NewClientFactory()
+	llmClient := llm.NewLLMClient(llmFactory)
+
+	mcSvc := service.NewModelConfigService(mcRepo, llmClient)
 	mcCtrl := controller.NewModelConfigController(mcSvc)
 
 	mlRepo := repository.NewMaterialLibraryRepo(db)

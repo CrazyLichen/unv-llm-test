@@ -85,7 +85,7 @@ func (s *MaterialLibraryService) GetByID(ctx context.Context, id string) (*model
 		return nil, err
 	}
 	if ml == nil {
-		return nil, &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return nil, common.ErrMaterialLibNotFound
 	}
 	return ml, nil
 }
@@ -102,7 +102,7 @@ func (s *MaterialLibraryService) Update(ctx context.Context, id string, req *mod
 		return err
 	}
 	if ml == nil {
-		return &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return common.ErrMaterialLibNotFound
 	}
 	if err := s.repo.Update(ctx, id, req); err != nil {
 		return err
@@ -118,7 +118,7 @@ func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if ml == nil {
-		return &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return common.ErrMaterialLibNotFound
 	}
 
 	// 检查是否有关联任务
@@ -127,7 +127,7 @@ func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if hasRelated {
-		return &AppError{Code: common.ErrLibraryAlreadyBound, Msg: "该素材库已被任务关联，无法删除"}
+		return common.ErrMaterialLibBound
 	}
 
 	// 查询所有文件记录
@@ -168,31 +168,31 @@ func (s *MaterialLibraryService) UploadImages(ctx context.Context, libraryId str
 		return nil, err
 	}
 	if ml == nil {
-		return nil, &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return nil, common.ErrMaterialLibNotFound
 	}
 	if ml.Type != "Image" {
-		return nil, &AppError{Code: common.ErrLibraryTypeMismatch, Msg: "素材库类型不是图片集"}
+		return nil, common.ErrLibTypeMismatch
 	}
 
 	form.Request.Body = http.MaxBytesReader(form.Writer, form.Request.Body, s.maxImageBatchSize)
 
 	multipartForm, err := form.MultipartForm()
 	if err != nil {
-		return nil, &AppError{Code: common.ErrParamInvalid, Msg: "解析上传表单失败: " + err.Error()}
+		return nil, common.NewErrParamValidation("解析上传表单失败: " + err.Error())
 	}
 
 	files := multipartForm.File["files"]
 	if len(files) == 0 {
-		return nil, &AppError{Code: common.ErrParamInvalid, Msg: "未选择图片文件"}
+		return nil, common.NewErrParamValidation("未选择图片文件")
 	}
 	if len(files) > s.maxImageCount {
-		return nil, &AppError{Code: common.ErrParamInvalid, Msg: fmt.Sprintf("单次最多上传 %d 张图片", s.maxImageCount)}
+		return nil, common.NewErrParamValidation(fmt.Sprintf("单次最多上传 %d 张图片", s.maxImageCount))
 	}
 
 	// 确保目录存在
 	imgDir := filepath.Join(s.uploadDir, "images", libraryId)
 	if err := os.MkdirAll(imgDir, 0755); err != nil {
-		return nil, &AppError{Code: common.ErrFileUploadFailed, Msg: "创建存储目录失败"}
+		return nil, common.NewErrFileUploadFailed("创建存储目录失败")
 	}
 
 	var uploaded []model.MaterialFile
@@ -282,10 +282,10 @@ func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId 
 		return nil, err
 	}
 	if ml == nil {
-		return nil, &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return nil, common.ErrMaterialLibNotFound
 	}
 	if ml.Type != "Video" {
-		return nil, &AppError{Code: common.ErrLibraryTypeMismatch, Msg: "素材库类型不是视频集"}
+		return nil, common.ErrLibTypeMismatch
 	}
 
 	// 检查同名已完成或合并中的文件
@@ -294,7 +294,7 @@ func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId 
 		return nil, err
 	}
 	if existing != nil {
-		return nil, &AppError{Code: common.ErrParamInvalid, Msg: "同名视频文件已存在"}
+		return nil, common.NewErrParamValidation("同名视频文件已存在")
 	}
 
 	// 断点续传：检查同名上传中的文件
@@ -361,7 +361,7 @@ func (s *MaterialLibraryService) InitVideoUpload(ctx context.Context, libraryId 
 	// 创建分片临时目录
 	chunkDir := filepath.Join(s.uploadDir, "videos", libraryId, "chunks")
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
-		return nil, &AppError{Code: common.ErrFileUploadFailed, Msg: "创建分片目录失败"}
+		return nil, common.NewErrFileUploadFailed("创建分片目录失败")
 	}
 
 	slog.Info("初始化视频上传", "libraryId", libraryId, "uploadId", uploadId, "chunkCount", chunkCount)
@@ -378,34 +378,34 @@ func (s *MaterialLibraryService) UploadChunk(ctx context.Context, uploadId strin
 		return err
 	}
 	if mf == nil {
-		return &AppError{Code: common.ErrParamInvalid, Msg: "无效的上传标识"}
+		return common.NewErrParamValidation("无效的上传标识")
 	}
 	if mf.UploadStatus != "Uploading" {
-		return &AppError{Code: common.ErrParamInvalid, Msg: "文件不在上传中状态"}
+		return common.NewErrParamValidation("文件不在上传中状态")
 	}
 
 	// 写入分片临时文件
 	chunkDir := filepath.Join(s.uploadDir, filepath.Dir(mf.StoragePath), "chunks")
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
-		return &AppError{Code: common.ErrFileUploadFailed, Msg: "创建分片目录失败"}
+		return common.NewErrFileUploadFailed("创建分片目录失败")
 	}
 
 	chunkPath := filepath.Join(chunkDir, mf.Id+".part."+strconv.Itoa(int(chunkIndex)))
 	src, err := fileHeader.Open()
 	if err != nil {
-		return &AppError{Code: common.ErrFileUploadFailed, Msg: "打开分片数据失败"}
+		return common.NewErrFileUploadFailed("打开分片数据失败")
 	}
 	defer src.Close()
 
 	dst, err := os.Create(chunkPath)
 	if err != nil {
-		return &AppError{Code: common.ErrFileUploadFailed, Msg: "创建分片文件失败"}
+		return common.NewErrFileUploadFailed("创建分片文件失败")
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
 		os.Remove(chunkPath)
-		return &AppError{Code: common.ErrFileUploadFailed, Msg: "写入分片数据失败"}
+		return common.NewErrFileUploadFailed("写入分片数据失败")
 	}
 
 	// 更新已上传分片数
@@ -429,15 +429,15 @@ func (s *MaterialLibraryService) CompleteVideoUpload(ctx context.Context, upload
 		return err
 	}
 	if mf == nil {
-		return &AppError{Code: common.ErrParamInvalid, Msg: "无效的上传标识"}
+		return common.NewErrParamValidation("无效的上传标识")
 	}
 	if mf.UploadStatus != "Uploading" {
-		return &AppError{Code: common.ErrParamInvalid, Msg: "文件不在上传中状态"}
+		return common.NewErrParamValidation("文件不在上传中状态")
 	}
 
 	// 校验所有分片是否已上传完毕
 	if mf.TotalChunks != nil && mf.UploadedChunks != nil && *mf.UploadedChunks < *mf.TotalChunks {
-		return &AppError{Code: common.ErrChunkUploadFailed, Msg: fmt.Sprintf("分片未全部上传完毕 (%d/%d)", *mf.UploadedChunks, *mf.TotalChunks)}
+		return common.NewErrChunkUploadFailed(fmt.Sprintf("分片未全部上传完毕 (%d/%d)", *mf.UploadedChunks, *mf.TotalChunks))
 	}
 
 	// 更新状态为 Merging
@@ -461,7 +461,7 @@ func (s *MaterialLibraryService) ListFiles(ctx context.Context, libraryId string
 		return nil, 0, err
 	}
 	if ml == nil {
-		return nil, 0, &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return nil, 0, common.ErrMaterialLibNotFound
 	}
 
 	files, total, err := s.repo.ListFiles(ctx, libraryId, page, pageSize, uploadStatus)
@@ -484,7 +484,7 @@ func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId strin
 		return err
 	}
 	if ml == nil {
-		return &AppError{Code: common.ErrLibraryNotFound, Msg: "素材库不存在"}
+		return common.ErrMaterialLibNotFound
 	}
 
 	// 检查素材库是否已关联任务
@@ -493,7 +493,7 @@ func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId strin
 		return err
 	}
 	if hasRelated {
-		return &AppError{Code: common.ErrLibraryAlreadyBound, Msg: "素材库已被任务关联，无法删除文件"}
+		return common.ErrMaterialLibBound
 	}
 
 	mf, err := s.repo.GetFileByID(ctx, fileId)
@@ -501,7 +501,7 @@ func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId strin
 		return err
 	}
 	if mf == nil || mf.LibraryId != libraryId {
-		return &AppError{Code: common.ErrFileNotFound, Msg: "文件不存在"}
+		return common.ErrMaterialFileNotFound
 	}
 
 	// 删除磁盘文件

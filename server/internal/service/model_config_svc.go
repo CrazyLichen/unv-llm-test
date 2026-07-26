@@ -5,13 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"strings"
-	"time"
 
 	"llm-test-server/internal/common"
+	"llm-test-server/internal/llm"
 	"llm-test-server/internal/model"
 	"llm-test-server/internal/repository"
 )
@@ -20,22 +17,15 @@ import (
 
 // ModelConfigService 模型配置业务逻辑层
 type ModelConfigService struct {
-	repo *repository.ModelConfigRepo
-}
-
-// AppError 业务错误，携带错误码和消息
-type AppError struct {
-	// Code 错误码
-	Code int
-	// Msg 错误消息
-	Msg string
+	repo      *repository.ModelConfigRepo
+	llmClient *llm.LLMClient
 }
 
 // ──────────────────────────── 导出函数 ────────────────────────────
 
 // NewModelConfigService 创建模型配置服务实例
-func NewModelConfigService(repo *repository.ModelConfigRepo) *ModelConfigService {
-	return &ModelConfigService{repo: repo}
+func NewModelConfigService(repo *repository.ModelConfigRepo, llmClient *llm.LLMClient) *ModelConfigService {
+	return &ModelConfigService{repo: repo, llmClient: llmClient}
 }
 
 // Create 创建模型配置
@@ -83,7 +73,7 @@ func (s *ModelConfigService) GetByID(ctx context.Context, id string) (*model.Mod
 		return nil, err
 	}
 	if mc == nil {
-		return nil, &AppError{Code: common.ErrModelConfigNotFound, Msg: "模型配置不存在"}
+		return nil, common.ErrModelConfigNotFound
 	}
 	mc.ApiKey = common.MaskApiKey(mc.ApiKey)
 	return mc, nil
@@ -110,13 +100,16 @@ func (s *ModelConfigService) Update(ctx context.Context, id string, req *model.U
 		return err
 	}
 	if mc == nil {
-		return &AppError{Code: common.ErrModelConfigNotFound, Msg: "模型配置不存在"}
+		return common.ErrModelConfigNotFound
 	}
 
 	if err := s.repo.Update(ctx, id, req); err != nil {
 		slog.Error("更新模型配置失败", "id", id, "error", err)
 		return err
 	}
+
+	// 配置变更，清理 LLM client 缓存
+	s.llmClient.RemoveClient(id)
 
 	slog.Info("更新模型配置成功", "id", id)
 	return nil
@@ -130,7 +123,7 @@ func (s *ModelConfigService) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if mc == nil {
-		return &AppError{Code: common.ErrModelConfigNotFound, Msg: "模型配置不存在"}
+		return common.ErrModelConfigNotFound
 	}
 
 	// 检查是否有关联任务
@@ -140,13 +133,16 @@ func (s *ModelConfigService) Delete(ctx context.Context, id string) error {
 	}
 	if hasRelated {
 		slog.Warn("删除模型配置被拒绝，存在关联任务", "id", id)
-		return &AppError{Code: common.ErrTaskStatusConflict, Msg: "该模型配置下存在关联任务，无法删除"}
+		return common.ErrModelConfigBoundByTask
 	}
 
 	if err := s.repo.Delete(ctx, id); err != nil {
 		slog.Error("删除模型配置失败", "id", id, "error", err)
 		return err
 	}
+
+	// 配置删除，清理 LLM client 缓存
+	s.llmClient.RemoveClient(id)
 
 	slog.Info("删除模型配置成功", "id", id)
 	return nil
@@ -159,42 +155,22 @@ func (s *ModelConfigService) TestConnectivity(ctx context.Context, id string) (*
 		return nil, err
 	}
 	if mc == nil {
-		return nil, &AppError{Code: common.ErrModelConfigNotFound, Msg: "模型配置不存在"}
+		return nil, common.ErrModelConfigNotFound
 	}
 
-	// 构造 OpenAI 兼容请求体
-	body := fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"Hello"}],"max_tokens":5}`, mc.ModelId)
-
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mc.ApiUrl, strings.NewReader(body))
+	latency, err := s.llmClient.TestConnectivity(ctx, mc.Id, llm.ModelConfigParam{
+		ApiUrl:      mc.ApiUrl,
+		ApiKey:      mc.ApiKey,
+		ModelId:     mc.ModelId,
+		Temperature: mc.Temperature,
+		MaxTokens:   mc.MaxTokens,
+	})
 	if err != nil {
-		slog.Error("创建连通性测试请求失败", "id", id, "error", err)
-		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("创建请求失败: %s", err.Error())}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+mc.ApiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	elapsed := time.Since(start).Milliseconds()
-	if err != nil {
-		slog.Error("模型连通性测试失败", "id", id, "modelId", mc.ModelId, "error", err)
-		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("连接失败: %s", err.Error())}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		slog.Error("模型连通性测试返回错误", "id", id, "modelId", mc.ModelId, "statusCode", resp.StatusCode, "latency", elapsed)
-		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("模型返回错误(HTTP %d): %s", resp.StatusCode, string(respBody))}
+		return nil, err
 	}
 
-	slog.Info("模型连通性测试成功", "id", id, "modelId", mc.ModelId, "latency", elapsed)
-	return &model.TestModelConfigResp{Latency: int(elapsed)}, nil
-}
-
-// Error 实现 error 接口
-func (e *AppError) Error() string {
-	return e.Msg
+	slog.Info("模型连通性测试成功", "id", id, "modelId", mc.ModelId, "latency", latency)
+	return &model.TestModelConfigResp{Latency: latency}, nil
 }
 
 // ──────────────────────────── 非导出函数 ────────────────────────────

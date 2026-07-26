@@ -3,9 +3,13 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 
@@ -253,7 +257,170 @@ func (s *TaskService) Update(ctx context.Context, id string, req *model.UpdateTa
 	return nil
 }
 
+// ListImages 获取任务分析结果列表
+func (s *TaskService) ListImages(ctx context.Context, taskId, imageId string, page, pageSize int, status, correction string) ([]model.ImageItem, int, error) {
+	// 校验任务存在性
+	task, err := s.repo.GetByID(ctx, taskId)
+	if err != nil {
+		return nil, 0, err
+	}
+	if task == nil {
+		return nil, 0, common.ErrTaskNotFound
+	}
+
+	// 按 ImageId 精确查询
+	if imageId != "" {
+		img, err := s.repo.GetImageByIDAndTaskId(ctx, taskId, imageId)
+		if err != nil {
+			return nil, 0, err
+		}
+		if img == nil {
+			return nil, 0, common.ErrImageNotFound
+		}
+		item := s.toImageItem(img)
+		return []model.ImageItem{item}, 1, nil
+	}
+
+	// 分页查询
+	images, total, err := s.repo.ListImages(ctx, taskId, page, pageSize, status, correction)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	items := make([]model.ImageItem, 0, len(images))
+	for i := range images {
+		items = append(items, s.toImageItem(&images[i]))
+	}
+
+	return items, total, nil
+}
+
+// UploadMissedPhoto 补录漏报照片
+func (s *TaskService) UploadMissedPhoto(ctx context.Context, taskId string, file *multipart.FileHeader) error {
+	// 校验任务存在性
+	task, err := s.repo.GetByID(ctx, taskId)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return common.ErrTaskNotFound
+	}
+
+	// 生成素材 ID
+	imgId, err := generateImageID()
+	if err != nil {
+		return fmt.Errorf("生成素材ID失败: %w", err)
+	}
+
+	// 保存文件到磁盘
+	ext := filepath.Ext(file.Filename)
+	if ext == "" {
+		ext = ".jpg"
+	}
+	frameDir := filepath.Join(s.uploadDir, "tasks", taskId, "frames")
+	if err := os.MkdirAll(frameDir, 0755); err != nil {
+		return common.NewErrFileUploadFailed("创建帧目录失败")
+	}
+
+	fullPath := filepath.Join(frameDir, imgId+ext)
+	src, err := file.Open()
+	if err != nil {
+		return common.NewErrFileUploadFailed("打开上传文件失败")
+	}
+	defer src.Close()
+
+	dst, err := os.Create(fullPath)
+	if err != nil {
+		return common.NewErrFileUploadFailed("创建目标文件失败")
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		os.Remove(fullPath)
+		return common.NewErrFileUploadFailed("写入文件失败")
+	}
+
+	// 创建 Image 记录
+	accessUrl := filepath.Join("/uploads/tasks", taskId, "frames", imgId+ext)
+	img := &model.Image{
+		Id:        imgId,
+		TaskId:    taskId,
+		AccessUrl: accessUrl,
+		Status:    "Detected",
+		Detection: sql.NullString{Valid: false},
+		CreatedAt: common.NowFormatted(),
+	}
+
+	if err := s.repo.CreateImage(ctx, img); err != nil {
+		os.Remove(fullPath)
+		return err
+	}
+
+	slog.Info("补录漏报照片成功", "taskId", taskId, "imageId", imgId)
+	return nil
+}
+
+// MarkCorrection 标记素材误报/恢复
+func (s *TaskService) MarkCorrection(ctx context.Context, taskId, imageId string, correction *string) error {
+	// 校验任务存在性
+	task, err := s.repo.GetByID(ctx, taskId)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return common.ErrTaskNotFound
+	}
+
+	// 查询素材
+	img, err := s.repo.GetImageByIDAndTaskId(ctx, taskId, imageId)
+	if err != nil {
+		return err
+	}
+	if img == nil {
+		return common.ErrImageNotFound
+	}
+
+	// 校验 Correction 值域
+	if correction != nil && *correction != "FalsePositive" && *correction != "DeletedFp" {
+		return common.NewErrParamValidation("Correction 值域无效，允许: null, FalsePositive, DeletedFp")
+	}
+
+	// 更新 Correction 字段
+	if err := s.repo.UpdateImage(ctx, imageId, map[string]interface{}{
+		"correction": correction,
+	}); err != nil {
+		return err
+	}
+
+	slog.Info("更新矫正标记成功", "taskId", taskId, "imageId", imageId, "correction", correction)
+	return nil
+}
+
 // ──────────────────────────── 非导出函数 ────────────────────────────
+
+// toImageItem 将 Image 实体转换为 ImageItem
+func (s *TaskService) toImageItem(img *model.Image) model.ImageItem {
+	item := model.ImageItem{
+		Id:             img.Id,
+		TaskId:         img.TaskId,
+		AccessUrl:      img.AccessUrl,
+		MaterialFileId: img.MaterialFileId,
+		FrameIndex:     img.FrameIndex,
+		Status:         img.Status,
+		FailReason:     img.FailReason,
+		Correction:     img.Correction,
+	}
+
+	// 解析 Detection JSON
+	if img.Detection.Valid {
+		var det model.Detection
+		if err := json.Unmarshal([]byte(img.Detection.String), &det); err == nil {
+			item.Detection = &det
+		}
+	}
+
+	return item
+}
 
 // createImageRecords 为图片集任务创建 Image 记录
 func (s *TaskService) createImageRecords(ctx context.Context, taskId string, libraryId string) error {

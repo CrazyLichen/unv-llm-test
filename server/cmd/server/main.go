@@ -37,7 +37,14 @@ func main() {
 		slog.Error("初始化数据库失败", "error", err)
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
-	defer db.Close()
+
+	// 关闭底层数据库连接
+	sqlDB, err := db.DB()
+	if err != nil {
+		slog.Error("获取底层数据库连接失败", "error", err)
+		log.Fatalf("获取底层数据库连接失败: %v", err)
+	}
+	defer sqlDB.Close()
 
 	// 设置 Gin 模式
 	gin.SetMode(cfg.Server.Mode)
@@ -47,9 +54,13 @@ func main() {
 	mcSvc := service.NewModelConfigService(mcRepo)
 	mcCtrl := controller.NewModelConfigController(mcSvc)
 
+	mlRepo := repository.NewMaterialLibraryRepo(db)
+	mlSvc := service.NewMaterialLibraryService(mlRepo, &cfg.Upload)
+	mlCtrl := controller.NewMaterialLibraryController(mlSvc)
+
 	// 注册路由
 	r := gin.Default()
-	controller.SetupRouter(r, mcCtrl)
+	controller.SetupRouter(r, mcCtrl, mlCtrl, cfg.Upload.Dir)
 
 	// 启动服务
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

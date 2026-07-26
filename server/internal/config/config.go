@@ -18,6 +18,8 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	// Log 日志配置
 	Log LogConfig `yaml:"log"`
+	// Upload 上传配置
+	Upload UploadConfig `yaml:"upload"`
 }
 
 // ServerConfig 服务配置
@@ -44,6 +46,18 @@ type LogConfig struct {
 	Format string `yaml:"format"`
 	// File 日志文件路径，为空则仅输出到控制台
 	File string `yaml:"file"`
+}
+
+// UploadConfig 上传配置
+type UploadConfig struct {
+	// Dir 上传文件存储目录
+	Dir string `yaml:"dir"`
+	// MaxImageSize 单个图片文件最大大小（字节）
+	MaxImageSize int64 `yaml:"max_image_size"`
+	// MaxImageCount 单次最多上传图片数量
+	MaxImageCount int `yaml:"max_image_count"`
+	// MaxImageBatchSize 单次上传请求总体积最大值（字节）
+	MaxImageBatchSize int64 `yaml:"max_image_batch_size"`
 }
 
 // ──────────────────────────── 导出函数 ────────────────────────────
@@ -81,6 +95,18 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Log.File == "" {
 		cfg.Log.File = ""
+	}
+	if cfg.Upload.Dir == "" {
+		cfg.Upload.Dir = "./data/uploads"
+	}
+	if cfg.Upload.MaxImageSize == 0 {
+		cfg.Upload.MaxImageSize = 10 * 1024 * 1024 // 10MB
+	}
+	if cfg.Upload.MaxImageCount == 0 {
+		cfg.Upload.MaxImageCount = 20
+	}
+	if cfg.Upload.MaxImageBatchSize == 0 {
+		cfg.Upload.MaxImageBatchSize = 50 * 1024 * 1024 // 50MB
 	}
 
 	// 环境变量覆盖

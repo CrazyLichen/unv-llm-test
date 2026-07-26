@@ -1,21 +1,22 @@
 package repository
 
 import (
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 
 	"llm-test-server/internal/config"
+	"llm-test-server/internal/model"
 )
 
 // ──────────────────────────── 导出函数 ────────────────────────────
 
-// InitDB 初始化数据库连接并建表
-func InitDB(cfg *config.DatabaseConfig) (*sql.DB, error) {
+// InitDB 初始化数据库连接并自动迁移表结构
+func InitDB(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	// 确保 DSN 的父目录存在
 	dir := filepath.Dir(cfg.DSN)
 	if dir != "." && dir != "" {
@@ -24,39 +25,24 @@ func InitDB(cfg *config.DatabaseConfig) (*sql.DB, error) {
 		}
 	}
 
-	db, err := sql.Open(cfg.Driver, cfg.DSN)
+	// 使用 glebarez/sqlite 作为 GORM 的 SQLite Dialector
+	db, err := gorm.Open(sqlite.Open(cfg.DSN), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 
 	// SQLite 写入是单写锁，限制最大打开连接数
-	db.SetMaxOpenConns(1)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("获取底层数据库连接失败: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
 
-	if err := createTables(db); err != nil {
-		return nil, fmt.Errorf("创建数据表失败: %w", err)
+	// 自动迁移表结构
+	if err := db.AutoMigrate(&model.ModelConfig{}, &model.MaterialLibrary{}, &model.MaterialFile{}); err != nil {
+		return nil, fmt.Errorf("自动迁移表结构失败: %w", err)
 	}
 
 	slog.Info("数据库初始化成功", "driver", cfg.Driver, "dsn", cfg.DSN)
 	return db, nil
-}
-
-// ──────────────────────────── 非导出函数 ────────────────────────────
-
-// createTables 执行建表 SQL
-func createTables(db *sql.DB) error {
-	const sql = `
-	CREATE TABLE IF NOT EXISTS model_configs (
-		id          TEXT PRIMARY KEY,
-		model_name  TEXT NOT NULL,
-		model_id    TEXT NOT NULL,
-		api_url     TEXT NOT NULL,
-		api_key     TEXT NOT NULL,
-		temperature REAL NOT NULL DEFAULT 0.7,
-		max_tokens  INTEGER NOT NULL DEFAULT 4096,
-		created_at  TEXT NOT NULL,
-		updated_at  TEXT NOT NULL
-	);`
-
-	_, err := db.Exec(sql)
-	return err
 }

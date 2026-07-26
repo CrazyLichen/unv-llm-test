@@ -53,6 +53,8 @@ const (
 	ErrCodeTaskNotFound = 3001
 	// ErrCodeTaskStatusInvalid 任务状态不允许此操作错误码
 	ErrCodeTaskStatusInvalid = 3002
+	// ErrCodeImageNotFound 素材不存在错误码
+	ErrCodeImageNotFound = 3003
 
 	// ──────── LLM 领域 (5xxx) ────────
 	// ErrCodeLLMCallFailed 大模型调用失败错误码
@@ -97,6 +99,8 @@ var (
 	ErrTaskNotFound = AppError{Code: ErrCodeTaskNotFound, Message: "任务不存在"}
 	// ErrTaskStatusInvalid 任务状态不允许此操作
 	ErrTaskStatusInvalid = AppError{Code: ErrCodeTaskStatusInvalid, Message: "任务状态不允许此操作"}
+	// ErrImageNotFound 素材不存在
+	ErrImageNotFound = AppError{Code: ErrCodeImageNotFound, Message: "素材不存在"}
 
 	// ──────── LLM 领域 (5xxx) ────────
 	// ErrLLMCallFailed 大模型调用失败

@@ -173,3 +173,31 @@ type DetectedDetail struct {
 	// FalsePositive 误报数
 	FalsePositive int `json:"FalsePositive"`
 }
+
+// ImageItem 检测素材响应 DTO
+type ImageItem struct {
+	// Id 素材唯一标识
+	Id string `json:"Id"`
+	// TaskId 所属任务 ID
+	TaskId string `json:"TaskId"`
+	// AccessUrl 图片/帧浏览器访问 URL
+	AccessUrl string `json:"AccessUrl"`
+	// MaterialFileId 关联原始素材文件 ID，图片集有值，视频帧为 null
+	MaterialFileId *string `json:"MaterialFileId"`
+	// FrameIndex 视频帧序号，视频帧有值
+	FrameIndex *int32 `json:"FrameIndex"`
+	// Status 检测状态
+	Status string `json:"Status"`
+	// Detection 检测结果，无检测结果时为 null
+	Detection *Detection `json:"Detection"`
+	// FailReason 失败原因
+	FailReason *string `json:"FailReason"`
+	// Correction 矫正标记：null=正常, "FalsePositive"=误报, "DeletedFp"=已删除误报
+	Correction *string `json:"Correction"`
+}
+
+// UpdateCorrectionReq 矫正请求 DTO
+type UpdateCorrectionReq struct {
+	// Correction 矫正标记：nil=恢复正常, "FalsePositive"=标记误报, "DeletedFp"=删除误报
+	Correction *string `json:"Correction"`
+}

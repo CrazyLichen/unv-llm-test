@@ -153,6 +153,9 @@ func (s *MaterialLibraryService) Delete(ctx context.Context, id string) error {
 	libDir := filepath.Join(s.uploadDir, strings.ToLower(ml.Type)+"s", id)
 	os.RemoveAll(libDir)
 
+	// 清理空类型目录（images/ 或 videos/）
+	s.removeEmptyParentDirs(filepath.Dir(libDir))
+
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -510,6 +513,9 @@ func (s *MaterialLibraryService) DeleteFile(ctx context.Context, libraryId strin
 		slog.Warn("删除磁盘文件失败", "path", fullPath, "error", err)
 	}
 
+	// 清理空父目录（素材库目录、类型目录）
+	s.removeEmptyParentDirs(filepath.Dir(fullPath))
+
 	if err := s.repo.DeleteFile(ctx, fileId); err != nil {
 		return err
 	}
@@ -651,4 +657,23 @@ func (s *MaterialLibraryService) mergeChunksAsync(mf *model.MaterialFile) {
 	s.repo.UpdateLibraryStats(ctx, mf.LibraryId)
 
 	slog.Info("视频合并成功", "fileId", mf.Id, "libraryId", mf.LibraryId)
+}
+
+// removeEmptyParentDirs 从 dir 开始向上逐级删除空目录，直到 uploadDir 为止
+func (s *MaterialLibraryService) removeEmptyParentDirs(dir string) {
+	for {
+		if dir == s.uploadDir || dir == "" || dir == "." {
+			break
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			break
+		}
+		if err := os.Remove(dir); err != nil {
+			slog.Warn("清理空目录失败", "dir", dir, "error", err)
+			break
+		}
+		slog.Info("清理空目录", "dir", dir)
+		dir = filepath.Dir(dir)
+	}
 }

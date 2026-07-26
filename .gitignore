@@ -1,6 +1,7 @@
 # 构建产物
 server/server.exe
 server/*.exe
+*.bak
 
 # 数据库文件
 server/data/

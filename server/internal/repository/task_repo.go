@@ -194,6 +194,51 @@ func (r *TaskRepo) GetImageByID(ctx context.Context, id string) (*model.Image, e
 	return &img, nil
 }
 
+// GetImageByIDAndTaskId 按 ID + 任务 ID 精确查询检测素材
+func (r *TaskRepo) GetImageByIDAndTaskId(ctx context.Context, taskId, imageId string) (*model.Image, error) {
+	var img model.Image
+	err := r.db.WithContext(ctx).Where("id = ? AND task_id = ?", imageId, taskId).First(&img).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("按ID和任务ID查询检测素材失败: %w", err)
+	}
+	return &img, nil
+}
+
+// ListImages 分页查询任务下检测素材列表
+func (r *TaskRepo) ListImages(ctx context.Context, taskId string, page, pageSize int, status string, correction string) ([]model.Image, int, error) {
+	query := r.db.WithContext(ctx).Model(&model.Image{}).Where("task_id = ?", taskId)
+
+	// 默认排除已删除误报的素材
+	if correction == "" {
+		query = query.Where("correction IS NULL OR correction != 'DeletedFp'")
+	} else {
+		query = query.Where("correction = ?", correction)
+	}
+
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		slog.Error("统计素材数量失败", "taskId", taskId, "error", err)
+		return nil, 0, fmt.Errorf("统计素材数量失败: %w", err)
+	}
+
+	var items []model.Image
+	offset := (page - 1) * pageSize
+	if err := query.Order("created_at ASC").Limit(pageSize).Offset(offset).Find(&items).Error; err != nil {
+		slog.Error("查询素材列表失败", "taskId", taskId, "page", page, "pageSize", pageSize, "error", err)
+		return nil, 0, fmt.Errorf("查询素材列表失败: %w", err)
+	}
+
+	slog.Info("查询素材列表", "taskId", taskId, "page", page, "pageSize", pageSize, "total", total, "count", len(items))
+	return items, int(total), nil
+}
+
 // ListPendingImages 查询任务下所有待检测素材
 func (r *TaskRepo) ListPendingImages(ctx context.Context, taskId string) ([]model.Image, error) {
 	var images []model.Image

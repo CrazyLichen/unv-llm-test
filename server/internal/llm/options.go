@@ -1,15 +1,13 @@
 package llm
 
-import "time"
-
 // ──────────────────────────── 结构体 ────────────────────────────
 
 // AnalyzeOption 调用选项
 type AnalyzeOption struct {
 	// MaxRetries 重试次数（默认 0，不重试）
 	MaxRetries int
-	// Timeout 单次请求超时（默认 60s）
-	Timeout time.Duration
+	// TimeoutMs 单次请求超时（毫秒，0 表示使用默认值 60000ms）
+	TimeoutMs int
 }
 
 // ──────────────────────────── 导出函数 ────────────────────────────
@@ -19,7 +17,7 @@ func WithRetry(n int) AnalyzeOption {
 	return AnalyzeOption{MaxRetries: n}
 }
 
-// WithTimeout 设置请求超时
-func WithTimeout(d time.Duration) AnalyzeOption {
-	return AnalyzeOption{Timeout: d}
+// WithTimeoutMs 设置请求超时（毫秒）
+func WithTimeoutMs(ms int) AnalyzeOption {
+	return AnalyzeOption{TimeoutMs: ms}
 }

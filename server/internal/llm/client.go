@@ -15,10 +15,7 @@ import (
 
 // ──────────────────────────── 常量 ────────────────────────────
 
-const (
-	// defaultTimeout 默认请求超时
-	defaultTimeout = 60 * time.Second
-)
+const ()
 
 // ──────────────────────────── 结构体 ────────────────────────────
 
@@ -57,8 +54,8 @@ func (c *LLMClient) Analyze(
 	reqOpts := []option.RequestOption{
 		option.WithMaxRetries(opt.MaxRetries),
 	}
-	if opt.Timeout > 0 {
-		reqOpts = append(reqOpts, option.WithRequestTimeout(opt.Timeout))
+	if opt.TimeoutMs > 0 {
+		reqOpts = append(reqOpts, option.WithRequestTimeout(time.Duration(opt.TimeoutMs)*time.Millisecond))
 	}
 
 	// 获取 client
@@ -153,13 +150,13 @@ func (c *LLMClient) RemoveClient(configID string) {
 
 // mergeOptions 合并调用选项
 func mergeOptions(opts []AnalyzeOption) AnalyzeOption {
-	result := AnalyzeOption{Timeout: defaultTimeout}
+	result := AnalyzeOption{TimeoutMs: 60000} // 默认 60 秒
 	for _, o := range opts {
 		if o.MaxRetries > 0 {
 			result.MaxRetries = o.MaxRetries
 		}
-		if o.Timeout > 0 {
-			result.Timeout = o.Timeout
+		if o.TimeoutMs > 0 {
+			result.TimeoutMs = o.TimeoutMs
 		}
 	}
 	return result

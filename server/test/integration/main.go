@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,10 +40,49 @@ var (
 	dbPath     string
 )
 
-// testCase 测试用例
+// ──────────────────────────── 测试框架核心类型 ────────────────────────────
+
+// testCase 测试用例定义
 type testCase struct {
-	name string
-	fn   func() bool
+	category    string              // 用例分类（如"模型配置CRUD"、"LLM真实交互"）
+	name        string              // 用例名称
+	description string              // 用例描述（测试什么场景）
+	expected    string              // 期望结果
+	fn          func() testResult   // 测试函数，返回 testResult
+}
+
+// testResult 测试执行结果
+type testResult struct {
+	passed  bool   // 是否通过
+	actual  string // 实际结果描述
+	detail  string // 补充信息（错误原因、关键数据等）
+}
+
+// caseResult 单条测试用例的执行结果
+type caseResult struct {
+	tc     testCase
+	result testResult
+	cost   time.Duration
+}
+
+func pass(actual string) testResult {
+	return testResult{passed: true, actual: actual}
+}
+
+func passf(format string, args ...interface{}) testResult {
+	return testResult{passed: true, actual: fmt.Sprintf(format, args...)}
+}
+
+func fail(actual string) testResult {
+	return testResult{passed: false, actual: actual}
+}
+
+func failf(format string, args ...interface{}) testResult {
+	return testResult{passed: false, actual: fmt.Sprintf(format, args...)}
+}
+
+func skip(reason string) testResult {
+	return testResult{passed: true, actual: "跳过: " + reason}
 }
 
 // httpResponse 简易 HTTP 响应
@@ -61,11 +101,11 @@ func httpGetFull(url string) (*httpResponse, error) {
 	return &httpResponse{statusCode: resp.StatusCode, body: body}, nil
 }
 
-// ──────────────────────────── 导出函数 ────────────────────────────
+// ──────────────────────────── 主函数 ────────────────────────────
 
 func main() {
 	fmt.Println("========================================")
-	fmt.Println("  素材库接口集成测试（真实服务）")
+	fmt.Println("  集成测试（真实服务 + 真实 LLM 交互）")
 	fmt.Println("========================================")
 	fmt.Println()
 
@@ -91,35 +131,138 @@ func main() {
 	}
 	fmt.Printf("[SETUP] 服务已启动: %s\n\n", baseURL)
 
-	tests := getMaterialLibraryTests()
+	tests := append(getModelConfigAndLLMTests(), getMaterialLibraryTests()...)
 
-	passed := 0
-	failed := 0
+	// 执行所有测试用例，收集结果
+	var results []caseResult
 
 	fmt.Println("----------------------------------------")
 	fmt.Println("  开始执行测试用例")
 	fmt.Println("----------------------------------------")
+
 	for _, tc := range tests {
-		fmt.Printf("\n[RUN]  %s\n", tc.name)
-		ok := tc.fn()
-		if ok {
+		fmt.Printf("\n[RUN]  %s - %s\n", tc.category, tc.name)
+		start := time.Now()
+		r := tc.fn()
+		cost := time.Since(start)
+		results = append(results, caseResult{tc: tc, result: r, cost: cost})
+
+		status := "PASS"
+		if !r.passed {
+			status = "FAIL"
+		}
+		fmt.Printf("[%s] %s (耗时: %s)\n", status, tc.name, cost.Round(time.Millisecond))
+	}
+
+	// 生成测试报告
+	fmt.Println()
+	report := buildReport(results)
+	fmt.Print(report)
+
+	// 写入报告文件
+	reportPath := filepath.Join(testRunDir, "test-report.txt")
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		fmt.Printf("[WARN] 写入报告文件失败: %s\n", err)
+	} else {
+		fmt.Printf("报告已写入: %s\n", reportPath)
+	}
+
+	// 统计
+	passed := 0
+	failed := 0
+	for _, r := range results {
+		if r.result.passed {
 			passed++
-			fmt.Printf("[PASS] %s\n", tc.name)
 		} else {
 			failed++
-			fmt.Printf("[FAIL] %s\n", tc.name)
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("========================================")
-	fmt.Printf("  测试完成: %d 通过, %d 失败, 共 %d\n", passed, failed, passed+failed)
-	fmt.Println("========================================")
 	fmt.Printf("\n测试产物目录: %s\n", testRunDir)
 
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// ──────────────────────────── 测试报告 ────────────────────────────
+
+func buildReport(results []caseResult) string {
+	// 按分类分组
+	type group struct {
+		category string
+		items    []caseResult
+	}
+	var groups []group
+	groupIdx := map[string]int{}
+
+	for _, r := range results {
+		idx, ok := groupIdx[r.tc.category]
+		if !ok {
+			groups = append(groups, group{category: r.tc.category})
+			idx = len(groups) - 1
+			groupIdx[r.tc.category] = idx
+		}
+		groups[idx].items = append(groups[idx].items, r)
+	}
+
+	// 统计
+	totalPassed := 0
+	totalFailed := 0
+	for _, r := range results {
+		if r.result.passed {
+			totalPassed++
+		} else {
+			totalFailed++
+		}
+	}
+
+	// 打印报告
+	var sb strings.Builder
+
+	sb.WriteString("╔══════════════════════════════════════════════════════════════════════╗\n")
+	sb.WriteString("║                        集成测试报告                                 ║\n")
+	sb.WriteString("╚══════════════════════════════════════════════════════════════════════╝\n")
+	sb.WriteString("\n")
+
+	for gi, g := range groups {
+		sb.WriteString(fmt.Sprintf("── %s ──\n", g.category))
+
+		for _, r := range g.items {
+			status := "PASS"
+			if !r.result.passed {
+				status = "FAIL"
+			}
+
+			sb.WriteString(fmt.Sprintf("\n  [%s] %s\n", status, r.tc.name))
+			sb.WriteString(fmt.Sprintf("    描述:   %s\n", r.tc.description))
+			sb.WriteString(fmt.Sprintf("    期望:   %s\n", r.tc.expected))
+			sb.WriteString(fmt.Sprintf("    实际:   %s\n", r.result.actual))
+			if r.result.detail != "" {
+				sb.WriteString(fmt.Sprintf("    详情:   %s\n", r.result.detail))
+			}
+			sb.WriteString(fmt.Sprintf("    耗时:   %s\n", r.cost.Round(time.Millisecond)))
+		}
+
+		if gi < len(groups)-1 {
+			sb.WriteString("\n")
+		}
+	}
+
+	// 汇总
+	sb.WriteString("\n══════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString(fmt.Sprintf("  汇总: 共 %d 个用例, %d 通过, %d 失败\n", len(results), totalPassed, totalFailed))
+	if totalFailed > 0 {
+		sb.WriteString("\n  失败用例:\n")
+		for _, r := range results {
+			if !r.result.passed {
+				sb.WriteString(fmt.Sprintf("    - %s: %s\n", r.tc.name, r.result.actual))
+			}
+		}
+	}
+	sb.WriteString("══════════════════════════════════════════════════════════════════════\n")
+
+	return sb.String()
 }
 
 // ──────────────────────────── 环境初始化 ────────────────────────────
@@ -167,7 +310,8 @@ func startServer() (func(), error) {
 	}
 
 	mcRepo := repository.NewModelConfigRepo(db)
-	llmClient := llm.NewLLMClient(nil) // 集成测试不需要真实LLM调用
+	llmFactory := llm.NewClientFactory()
+	llmClient := llm.NewLLMClient(llmFactory)
 	mcSvc := service.NewModelConfigService(mcRepo, llmClient)
 	mcCtrl := controller.NewModelConfigController(mcSvc)
 
@@ -338,15 +482,6 @@ func findTestVideos() []string {
 	return files
 }
 
-func checkSuccess(resp *apiResponse, label string) bool {
-	if resp.ErrorCode != 0 {
-		fmt.Printf("  [ERROR] %s 失败: ErrorCode=%d, ErrorMsg=%s\n", label, resp.ErrorCode, resp.ErrorMsg)
-		return false
-	}
-	fmt.Printf("  [OK] %s\n", label)
-	return true
-}
-
 // fileExists 检查文件是否存在
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
@@ -363,25 +498,6 @@ func countFilesInDir(dir string) int {
 		return nil
 	})
 	return count
-}
-
-// walkDir 递归打印目录结构
-func walkDir(dir string, indent string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		fullPath := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			fileCount := countFilesInDir(fullPath)
-			fmt.Printf("%s%s/ (%d files)\n", indent, e.Name(), fileCount)
-			walkDir(fullPath, indent+"  ")
-		} else {
-			info, _ := e.Info()
-			fmt.Printf("%s%s (%d bytes)\n", indent, e.Name(), info.Size())
-		}
-	}
 }
 
 // hasChunkDirs 检查是否有残留的 chunks 目录

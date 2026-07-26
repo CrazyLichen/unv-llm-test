@@ -26,160 +26,172 @@ var (
 func getMaterialLibraryTests() []testCase {
 	return []testCase{
 		// 素材库 CRUD
-		{"创建图片素材库", testCreateImageLibrary},
-		{"创建视频素材库", testCreateVideoLibrary},
-		{"查询素材库列表", testListLibraries},
-		{"按ID查询素材库", testGetLibraryByID},
-		{"更新素材库", testUpdateLibrary},
+		{"素材库CRUD", "创建图片素材库", "创建一个类型为Image的素材库", "创建成功，返回非空ID，Type=Image，FileCount=0", testCreateImageLibrary},
+		{"素材库CRUD", "创建视频素材库", "创建一个类型为Video的素材库", "创建成功，返回非空ID，Type=Video", testCreateVideoLibrary},
+		{"素材库CRUD", "查询素材库列表", "分页查询素材库列表", "列表Total>=2（至少有图片库和视频库）", testListLibraries},
+		{"素材库CRUD", "按ID查询素材库", "使用图片库ID查询指定素材库", "查询成功，Total=1", testGetLibraryByID},
+		{"素材库CRUD", "更新素材库", "更新素材库的名称和描述", "更新成功，ErrorCode=0", testUpdateLibrary},
 
 		// 图片上传 & 磁盘验证
-		{"批量上传图片", testUploadImages},
-		{"验证图片文件存在于磁盘", testVerifyImageFilesOnDisk},
-		{"验证数据库记录与磁盘一致", testVerifyDbMatchesDisk},
-		{"查询素材文件列表（含进度）", testListFiles},
-		{"通过静态文件服务访问图片", testStaticFileAccess},
-		{"素材库统计信息验证", testLibraryStats},
+		{"图片上传与验证", "批量上传图片", "向图片库批量上传测试图片", "上传成功，UploadedCount>0", testUploadImages},
+		{"图片上传与验证", "验证图片文件存在于磁盘", "检查每个上传的图片文件在磁盘上是否存在且大小一致", "所有文件存在且磁盘大小==记录大小", testVerifyImageFilesOnDisk},
+		{"图片上传与验证", "验证数据库记录与磁盘一致", "对比数据库记录数与磁盘文件数", "数据库记录数==磁盘文件数，且每条记录的StoragePath对应文件存在", testVerifyDbMatchesDisk},
+		{"图片上传与验证", "查询素材文件列表（含进度）", "查询文件列表，验证已完成文件进度为100%", "所有Completed文件Progress=1.0", testListFiles},
+		{"图片上传与验证", "通过静态文件服务访问图片", "通过HTTP访问上传图片的静态URL", "HTTP 200，返回内容大小与记录一致", testStaticFileAccess},
+		{"图片上传与验证", "素材库统计信息验证", "查询素材库统计，验证FileCount和TotalSize", "FileCount==实际上传数，TotalSize==实际文件总大小", testLibraryStats},
 
 		// 删除行为验证
-		{"删除单个素材文件-验证磁盘文件已删除", testDeleteFileVerifyDisk},
-		{"删除素材库-验证级联清理", testDeleteLibraryVerifyCleanup},
+		{"删除行为验证", "删除单个素材文件-验证磁盘文件已删除", "删除一个素材文件，验证磁盘文件和数据库记录均已删除", "磁盘文件已删除，数据库记录已删除，统计已更新", testDeleteFileVerifyDisk},
+		{"删除行为验证", "删除素材库-验证级联清理", "创建临时库并上传文件后删除，验证级联清理", "素材库目录已清理，数据库记录已删除", testDeleteLibraryVerifyCleanup},
 
 		// 视频分片上传
-		{"视频分片上传完整流程", testVideoUploadFlow},
-		{"验证视频合并后无残留chunk", testVerifyNoChunkResidue},
-		{"视频断点续传", testVideoResumableUpload},
-		{"同名已完成视频-init报错", testVideoSameNameReject},
+		{"视频分片上传", "视频分片上传完整流程", "初始化→分片上传→完成→异步合并的完整视频上传流程", "合并完成，UploadStatus=Completed，磁盘文件大小与记录一致", testVideoUploadFlow},
+		{"视频分片上传", "验证视频合并后无残留chunk", "检查上传目录下是否残留chunks临时目录", "无chunks目录残留", testVerifyNoChunkResidue},
+		{"视频分片上传", "视频断点续传", "初始化上传后上传一个分片，再次初始化相同文件", "返回相同的UploadId，实现断点续传", testVideoResumableUpload},
+		{"视频分片上传", "同名已完成视频-init报错", "上传完整视频后再对同名文件init", "返回非零ErrorCode，提示同名文件已存在", testVideoSameNameReject},
 
 		// 异常场景
-		{"类型不匹配校验", testTypeMismatch},
+		{"异常场景", "类型不匹配校验", "向视频库上传图片、向图片库上传视频", "两种情况均被拒绝，ErrorMsg包含'类型不匹配'", testTypeMismatch},
 	}
 }
 
 // ──────────────────────────── 素材库 CRUD ────────────────────────────
 
-func testCreateImageLibrary() bool {
+func testCreateImageLibrary() testResult {
 	resp := doJSON("POST", apiPrefix, map[string]interface{}{
 		"Name":        "测试图片素材库",
 		"Type":        "Image",
 		"Description": "用于集成测试的图片素材库",
 	})
-	if !checkSuccess(resp, "创建图片素材库") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("创建失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 	var ml model.MaterialLibrary
 	json.Unmarshal(resp.Data, &ml)
 	imageLibID = ml.Id
-	fmt.Printf("  [INFO] ID: %s, 创建时间: %s\n", ml.Id, ml.CreatedAt)
-	return ml.Id != "" && ml.Type == "Image" && ml.FileCount == 0
+
+	if ml.Id == "" || ml.Type != "Image" || ml.FileCount != 0 {
+		return failf("字段不符合预期: Id=%s, Type=%s, FileCount=%d", ml.Id, ml.Type, ml.FileCount)
+	}
+	return passf("创建成功, ID=%s, Type=%s, FileCount=%d", ml.Id, ml.Type, ml.FileCount)
 }
 
-func testCreateVideoLibrary() bool {
+func testCreateVideoLibrary() testResult {
 	resp := doJSON("POST", apiPrefix, map[string]interface{}{
 		"Name":        "测试视频素材库",
 		"Type":        "Video",
 		"Description": "用于集成测试的视频素材库",
 	})
-	if !checkSuccess(resp, "创建视频素材库") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("创建失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 	var ml model.MaterialLibrary
 	json.Unmarshal(resp.Data, &ml)
 	videoLibID = ml.Id
-	fmt.Printf("  [INFO] ID: %s\n", ml.Id)
-	return ml.Id != "" && ml.Type == "Video"
+
+	if ml.Id == "" || ml.Type != "Video" {
+		return failf("字段不符合预期: Id=%s, Type=%s", ml.Id, ml.Type)
+	}
+	return passf("创建成功, ID=%s, Type=%s", ml.Id, ml.Type)
 }
 
-func testListLibraries() bool {
+func testListLibraries() testResult {
 	resp := doJSON("GET", apiPrefix+"?Page=1&PageSize=10", nil)
-	if !checkSuccess(resp, "查询列表") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 	var pageData common.PageData
 	json.Unmarshal(resp.Data, &pageData)
-	fmt.Printf("  [INFO] 总数: %d\n", pageData.Total)
-	return pageData.Total >= 2
+
+	if pageData.Total < 2 {
+		return failf("Total=%d, 期望>=2", pageData.Total)
+	}
+	return passf("查询成功, Total=%d, >=2", pageData.Total)
 }
 
-func testGetLibraryByID() bool {
+func testGetLibraryByID() testResult {
 	resp := doJSON("GET", apiPrefix+"?Id="+imageLibID, nil)
-	if !checkSuccess(resp, "按ID查询") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 	var pageData common.PageData
 	json.Unmarshal(resp.Data, &pageData)
-	return pageData.Total == 1
+
+	if pageData.Total != 1 {
+		return failf("Total=%d, 期望=1", pageData.Total)
+	}
+	return passf("查询成功, Total=1")
 }
 
-func testUpdateLibrary() bool {
+func testUpdateLibrary() testResult {
 	resp := doJSON("PUT", apiPrefix+"/"+imageLibID, map[string]interface{}{
 		"Name":        "更新后的图片库",
 		"Description": "更新后的描述",
 	})
-	return checkSuccess(resp, "更新素材库")
+	if resp.ErrorCode != 0 {
+		return failf("更新失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
+	}
+	return pass("更新成功, ErrorCode=0")
 }
 
 // ──────────────────────────── 图片上传 & 磁盘验证 ────────────────────────────
 
-func testUploadImages() bool {
+func testUploadImages() testResult {
 	files := findTestImages()
 	if len(files) == 0 {
-		fmt.Println("  [SKIP] testdata/images/ 下没有测试图片")
-		return true
+		return skip("testdata/images/ 下没有测试图片")
 	}
 
 	resp := doMultipart(apiPrefix+"/"+imageLibID+"/images", files)
-	if !checkSuccess(resp, "批量上传图片") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("上传失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 
 	var uploadResp model.UploadImageResp
 	json.Unmarshal(resp.Data, &uploadResp)
-	fmt.Printf("  [INFO] 成功上传 %d 张图片\n", uploadResp.UploadedCount)
-	for _, f := range uploadResp.Files {
-		fmt.Printf("         - %s (ID: %s, %d bytes, 状态: %s)\n", f.FileName, f.Id, f.FileSize, f.UploadStatus)
-	}
 	uploadedFiles = uploadResp.Files
-	return uploadResp.UploadedCount > 0
+
+	if uploadResp.UploadedCount <= 0 {
+		return failf("UploadedCount=%d, 期望>0", uploadResp.UploadedCount)
+	}
+	return passf("上传成功, UploadedCount=%d", uploadResp.UploadedCount)
 }
 
-func testVerifyImageFilesOnDisk() bool {
+func testVerifyImageFilesOnDisk() testResult {
 	if len(uploadedFiles) == 0 {
-		fmt.Println("  [SKIP] 没有已上传的文件")
-		return true
+		return skip("没有已上传的文件")
 	}
 
 	allOK := true
+	var details []string
 	for _, f := range uploadedFiles {
 		diskPath := filepath.Join(uploadDir, f.StoragePath)
 		if !fileExists(diskPath) {
-			fmt.Printf("  [ERROR] 文件不存在: %s\n", diskPath)
+			details = append(details, fmt.Sprintf("%s: 磁盘文件不存在", f.FileName))
 			allOK = false
 			continue
 		}
 		stat, _ := os.Stat(diskPath)
 		if stat.Size() != f.FileSize {
-			fmt.Printf("  [ERROR] 文件大小不一致: 磁盘 %d vs 记录 %d (%s)\n", stat.Size(), f.FileSize, f.FileName)
+			details = append(details, fmt.Sprintf("%s: 大小不一致(磁盘%d!=记录%d)", f.FileName, stat.Size(), f.FileSize))
 			allOK = false
-			continue
 		}
-		fmt.Printf("  [OK] %s: 磁盘大小=%d == 记录大小=%d\n", f.FileName, stat.Size(), f.FileSize)
 	}
 
-	fmt.Println("  [INFO] 上传目录结构:")
-	walkDir(uploadDir, "    ")
-	return allOK
+	if !allOK {
+		return failf("部分文件校验失败: %s", strings.Join(details, "; "))
+	}
+	return passf("所有%d个文件磁盘存在且大小一致", len(uploadedFiles))
 }
 
-func testVerifyDbMatchesDisk() bool {
+func testVerifyDbMatchesDisk() testResult {
 	if len(uploadedFiles) == 0 {
-		fmt.Println("  [SKIP] 没有已上传的文件")
-		return true
+		return skip("没有已上传的文件")
 	}
 
-	// 通过 API 查询文件列表，与磁盘实际文件数量对比
 	resp := doJSON("GET", apiPrefix+"/"+imageLibID+"/files?Page=1&PageSize=100", nil)
 	if resp.ErrorCode != 0 {
-		return false
+		return failf("查询文件列表失败: ErrorCode=%d", resp.ErrorCode)
 	}
 
 	var pageData common.PageData
@@ -187,16 +199,11 @@ func testVerifyDbMatchesDisk() bool {
 
 	fileItems, _ := parsePageToFiles(resp.Data)
 
-	// 数据库记录数
 	dbCount := pageData.Total
-	// 磁盘实际文件数
 	diskCount := countFilesInDir(filepath.Join(uploadDir, "images", imageLibID))
 
-	fmt.Printf("  [INFO] 数据库记录: %d, 磁盘文件: %d\n", dbCount, diskCount)
-
 	if dbCount != diskCount {
-		fmt.Printf("  [ERROR] 数据库与磁盘不一致！\n")
-		return false
+		return failf("数据库记录=%d, 磁盘文件=%d, 不一致", dbCount, diskCount)
 	}
 
 	// 逐条验证数据库记录的 StoragePath 对应磁盘文件存在
@@ -204,46 +211,38 @@ func testVerifyDbMatchesDisk() bool {
 	for _, f := range fileItems {
 		diskPath := filepath.Join(uploadDir, f.StoragePath)
 		if !fileExists(diskPath) {
-			fmt.Printf("  [ERROR] 数据库记录 %s 对应的磁盘文件不存在: %s\n", f.Id, diskPath)
 			allOK = false
 		}
 	}
-	if allOK {
-		fmt.Printf("  [OK] 所有数据库记录都有对应的磁盘文件\n")
+
+	if !allOK {
+		return fail("部分数据库记录的磁盘文件不存在")
 	}
-	return allOK
+	return passf("数据库记录=%d, 磁盘文件=%d, 全部对应", dbCount, diskCount)
 }
 
-func testListFiles() bool {
+func testListFiles() testResult {
 	resp := doJSON("GET", apiPrefix+"/"+imageLibID+"/files?Page=1&PageSize=24", nil)
-	if !checkSuccess(resp, "查询文件列表") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 
 	fileItems, _ := parsePageToFiles(resp.Data)
 	var pageData common.PageData
 	json.Unmarshal(resp.Data, &pageData)
 
-	fmt.Printf("  [INFO] 文件总数: %d\n", pageData.Total)
-	for _, f := range fileItems {
-		fmt.Printf("         - %s | 状态: %s | 进度: %.0f%% | AccessUrl: %s\n",
-			f.FileName, f.UploadStatus, f.Progress*100, f.AccessUrl)
-	}
-
 	// 验证所有已完成文件进度为 100%
 	for _, f := range fileItems {
 		if f.UploadStatus == "Completed" && f.Progress != 1.0 {
-			fmt.Printf("  [ERROR] 已完成文件进度不是 100%%: %s (%.0f%%)\n", f.FileName, f.Progress*100)
-			return false
+			return failf("已完成文件%s进度不是100%%: %.0f%%", f.FileName, f.Progress*100)
 		}
 	}
-	return true
+	return passf("文件总数=%d, 所有Completed文件进度=100%%", pageData.Total)
 }
 
-func testStaticFileAccess() bool {
+func testStaticFileAccess() testResult {
 	if len(uploadedFiles) == 0 {
-		fmt.Println("  [SKIP] 没有文件可访问")
-		return true
+		return skip("没有文件可访问")
 	}
 
 	accessUrl := uploadedFiles[0].AccessUrl
@@ -252,126 +251,99 @@ func testStaticFileAccess() bool {
 
 	resp, err := httpGetFull(fullURL)
 	if err != nil {
-		fmt.Printf("  [ERROR] 请求失败: %s\n", err)
-		return false
+		return failf("请求失败: %s", err)
 	}
-
-	fmt.Printf("  << HTTP %d, 收到 %d bytes\n", resp.statusCode, len(resp.body))
 
 	if resp.statusCode != 200 {
-		return false
+		return failf("HTTP状态码=%d, 期望=200", resp.statusCode)
 	}
 
-	// 验证返回的内容大小与记录一致
 	expectedSize := uploadedFiles[0].FileSize
 	if int64(len(resp.body)) != expectedSize {
-		fmt.Printf("  [ERROR] 静态文件大小不一致: 返回 %d bytes vs 记录 %d bytes\n", len(resp.body), expectedSize)
-		return false
+		return failf("返回内容大小=%d, 期望=%d", len(resp.body), expectedSize)
 	}
-	fmt.Printf("  [OK] 静态文件内容大小与记录一致 (%d bytes)\n", expectedSize)
-	return true
+	return passf("HTTP 200, 内容大小=%d, 与记录一致", expectedSize)
 }
 
-func testLibraryStats() bool {
+func testLibraryStats() testResult {
 	resp := doJSON("GET", apiPrefix+"?Id="+imageLibID, nil)
-	if !checkSuccess(resp, "查询统计") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("查询失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 
 	libs, _ := parsePageToLibraries(resp.Data)
-
 	if len(libs) == 0 {
-		fmt.Println("  [ERROR] 未找到素材库")
-		return false
+		return fail("未找到素材库")
 	}
 
 	ml := libs[0]
-	fmt.Printf("  [INFO] 文件数量: %d, 总大小: %d bytes (%.2f KB)\n", ml.FileCount, ml.TotalSize, float64(ml.TotalSize)/1024)
 
-	// 验证统计与实际一致
 	if ml.FileCount != int32(len(uploadedFiles)) {
-		fmt.Printf("  [ERROR] FileCount=%d 但实际上传了 %d 个文件\n", ml.FileCount, len(uploadedFiles))
-		return false
+		return failf("FileCount=%d, 实际上传=%d", ml.FileCount, len(uploadedFiles))
 	}
 
-	// 验证总大小
 	var expectedTotal int64
 	for _, f := range uploadedFiles {
 		expectedTotal += f.FileSize
 	}
 	if ml.TotalSize != expectedTotal {
-		fmt.Printf("  [ERROR] TotalSize=%d 但实际文件总大小 %d\n", ml.TotalSize, expectedTotal)
-		return false
+		return failf("TotalSize=%d, 实际文件总大小=%d", ml.TotalSize, expectedTotal)
 	}
-	fmt.Printf("  [OK] 统计数据与实际文件一致\n")
-	return true
+	return passf("FileCount=%d, TotalSize=%d, 与实际一致", ml.FileCount, ml.TotalSize)
 }
 
 // ──────────────────────────── 删除行为验证 ────────────────────────────
 
-func testDeleteFileVerifyDisk() bool {
+func testDeleteFileVerifyDisk() testResult {
 	if len(uploadedFiles) == 0 {
-		fmt.Println("  [SKIP] 没有可删除的文件")
-		return true
+		return skip("没有可删除的文件")
 	}
 
 	target := uploadedFiles[0]
 	diskPath := filepath.Join(uploadDir, target.StoragePath)
 
-	// 确认文件当前存在
 	if !fileExists(diskPath) {
-		fmt.Printf("  [ERROR] 删除前文件就不存在: %s\n", diskPath)
-		return false
+		return failf("删除前文件就不存在: %s", diskPath)
 	}
-	fmt.Printf("  [INFO] 删除前文件存在: %s (%d bytes)\n", diskPath, target.FileSize)
 
 	resp := doJSON("DELETE", apiPrefix+"/"+imageLibID+"/files/"+target.Id, nil)
-	if !checkSuccess(resp, "删除文件 "+target.FileName) {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("删除失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 
 	// 验证磁盘文件已删除
 	if fileExists(diskPath) {
-		fmt.Printf("  [ERROR] 删除后磁盘文件仍存在: %s\n", diskPath)
-		return false
+		return failf("删除后磁盘文件仍存在: %s", diskPath)
 	}
-	fmt.Printf("  [OK] 磁盘文件已删除: %s\n", filepath.Base(diskPath))
 
 	// 验证数据库记录已删除
 	listResp := doJSON("GET", apiPrefix+"/"+imageLibID+"/files?Page=1&PageSize=100", nil)
 	fileItems, _ := parsePageToFiles(listResp.Data)
-
 	for _, f := range fileItems {
 		if f.Id == target.Id {
-			fmt.Printf("  [ERROR] 数据库记录仍存在: ID=%s\n", target.Id)
-			return false
+			return failf("数据库记录仍存在: ID=%s", target.Id)
 		}
 	}
-	fmt.Printf("  [OK] 数据库记录已删除\n")
 
 	// 验证素材库统计已更新
 	statsResp := doJSON("GET", apiPrefix+"?Id="+imageLibID, nil)
 	statsLibs, _ := parsePageToLibraries(statsResp.Data)
-	if len(statsLibs) > 0 {
-		fmt.Printf("  [INFO] 删除后素材库统计: FileCount=%d, TotalSize=%d\n", statsLibs[0].FileCount, statsLibs[0].TotalSize)
-		if statsLibs[0].FileCount != int32(len(uploadedFiles)-1) {
-			fmt.Printf("  [ERROR] FileCount 未正确更新\n")
-			return false
-		}
+	if len(statsLibs) > 0 && statsLibs[0].FileCount != int32(len(uploadedFiles)-1) {
+		return failf("FileCount未正确更新: %d, 期望=%d", statsLibs[0].FileCount, len(uploadedFiles)-1)
 	}
 
 	uploadedFiles = uploadedFiles[1:]
-	return true
+	return pass("磁盘文件已删除, 数据库记录已删除, 统计已更新")
 }
 
-func testDeleteLibraryVerifyCleanup() bool {
-	// 创建临时库并删除
+func testDeleteLibraryVerifyCleanup() testResult {
+	// 创建临时库
 	resp := doJSON("POST", apiPrefix, map[string]interface{}{
 		"Name": "待删除的临时库",
 		"Type": "Image",
 	})
-	if !checkSuccess(resp, "创建临时库") {
-		return false
+	if resp.ErrorCode != 0 {
+		return failf("创建临时库失败: ErrorCode=%d, ErrorMsg=%s", resp.ErrorCode, resp.ErrorMsg)
 	}
 	var ml model.MaterialLibrary
 	json.Unmarshal(resp.Data, &ml)
@@ -380,43 +352,38 @@ func testDeleteLibraryVerifyCleanup() bool {
 	imgFiles := findTestImages()
 	if len(imgFiles) > 0 {
 		doMultipart(apiPrefix+"/"+ml.Id+"/images", imgFiles[:1])
-		fmt.Println("  [INFO] 临时库中已上传1张图片")
 	}
 
 	// 记录临时库目录
 	libDir := filepath.Join(uploadDir, "images", ml.Id)
-	fmt.Printf("  [INFO] 临时库目录: %s\n", libDir)
 
 	// 删除素材库
 	delResp := doJSON("DELETE", apiPrefix+"/"+ml.Id, nil)
-	if !checkSuccess(delResp, "删除素材库") {
-		return false
+	if delResp.ErrorCode != 0 {
+		return failf("删除失败: ErrorCode=%d, ErrorMsg=%s", delResp.ErrorCode, delResp.ErrorMsg)
 	}
 
 	// 验证目录已被清理
-	if fileExists(libDir) {
-		fmt.Printf("  [WARN] 素材库目录仍存在: %s（可能是因为 OS 延迟）\n", libDir)
-	} else {
-		fmt.Printf("  [OK] 素材库目录已清理\n")
-	}
+	dirExists := fileExists(libDir)
 
 	// 验证数据库记录已删除
 	getResp := doJSON("GET", apiPrefix+"?Id="+ml.Id, nil)
-	// handleError 统一返回 ErrCodeServerInternal，需通过非零判断
 	if getResp.ErrorCode == 0 {
-		fmt.Printf("  [ERROR] 素材库仍可查询到，删除未生效\n")
-		return false
+		return fail("素材库仍可查询到，删除未生效")
 	}
-	fmt.Printf("  [OK] 素材库已删除（ErrorCode=%d）\n", getResp.ErrorCode)
-	return true
+
+	if dirExists {
+		return passf("数据库记录已删除(ErrorCode=%d)，目录仍存在(OS延迟)", getResp.ErrorCode)
+	}
+	return pass("素材库目录已清理, 数据库记录已删除")
 }
 
 // ──────────────────────────── 视频分片上传 ────────────────────────────
 
-func testVideoUploadFlow() bool {
+func testVideoUploadFlow() testResult {
 	videos := findTestVideos()
 	if len(videos) == 0 {
-		fmt.Println("  [SKIP] testdata/videos/ 为空，使用合成数据测试")
+		fmt.Println("  [INFO] testdata/videos/ 为空，使用合成数据测试")
 		return testVideoUploadWithSyntheticData()
 	}
 
@@ -424,7 +391,6 @@ func testVideoUploadFlow() bool {
 	stat, _ := os.Stat(videoPath)
 	fileSize := stat.Size()
 	chunkSize := int64(2 * 1024 * 1024)
-	fmt.Printf("  [INFO] 视频文件: %s (%d bytes, 分片大小: %d)\n", filepath.Base(videoPath), fileSize, chunkSize)
 
 	// 初始化
 	initResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/init", map[string]interface{}{
@@ -432,19 +398,17 @@ func testVideoUploadFlow() bool {
 		"FileSize":  fileSize,
 		"ChunkSize": chunkSize,
 	})
-	if !checkSuccess(initResp, "初始化视频上传") {
-		return false
+	if initResp.ErrorCode != 0 {
+		return failf("初始化失败: ErrorCode=%d, ErrorMsg=%s", initResp.ErrorCode, initResp.ErrorMsg)
 	}
 
 	var initResult model.InitVideoUploadResp
 	json.Unmarshal(initResp.Data, &initResult)
-	fmt.Printf("  [INFO] UploadId: %s, 分片总数: %d\n", initResult.UploadId, initResult.ChunkCount)
 
 	// 分片上传
 	file, err := os.Open(videoPath)
 	if err != nil {
-		fmt.Printf("  [ERROR] 打开视频文件失败: %s\n", err)
-		return false
+		return failf("打开视频文件失败: %s", err)
 	}
 	defer file.Close()
 
@@ -452,15 +416,13 @@ func testVideoUploadFlow() bool {
 		chunkData := make([]byte, chunkSize)
 		n, err := file.Read(chunkData)
 		if err != nil && err.Error() != "EOF" {
-			fmt.Printf("  [ERROR] 读取分片 %d 失败: %s\n", i, err)
-			return false
+			return failf("读取分片%d失败: %s", i, err)
 		}
 		chunkData = chunkData[:n]
 
 		chunkResp := doChunkUpload(apiPrefix+"/"+videoLibID+"/videos/chunk", initResult.UploadId, i, chunkData)
 		if chunkResp.ErrorCode != 0 {
-			fmt.Printf("  [ERROR] 分片 %d 上传失败: %s\n", i, chunkResp.ErrorMsg)
-			return false
+			return failf("分片%d上传失败: %s", i, chunkResp.ErrorMsg)
 		}
 		fmt.Printf("  [OK] 分片 %d/%d 上传成功 (%d bytes)\n", i+1, initResult.ChunkCount, n)
 	}
@@ -469,8 +431,8 @@ func testVideoUploadFlow() bool {
 	completeResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/complete", map[string]interface{}{
 		"UploadId": initResult.UploadId,
 	})
-	if !checkSuccess(completeResp, "完成上传") {
-		return false
+	if completeResp.ErrorCode != 0 {
+		return failf("完成上传失败: ErrorCode=%d, ErrorMsg=%s", completeResp.ErrorCode, completeResp.ErrorMsg)
 	}
 
 	fmt.Println("  [INFO] 等待异步合并...")
@@ -482,45 +444,36 @@ func testVideoUploadFlow() bool {
 
 	for _, f := range fileItems {
 		if f.FileName == filepath.Base(videoPath) {
-			fmt.Printf("  [INFO] 合并状态: %s, 进度: %.0f%%\n", f.UploadStatus, f.Progress*100)
 			if f.UploadStatus != "Completed" {
-				fmt.Printf("  [ERROR] 合并未完成，状态: %s\n", f.UploadStatus)
-				return false
+				return failf("合并未完成, UploadStatus=%s", f.UploadStatus)
 			}
 
-			// 验证磁盘文件
 			diskPath := filepath.Join(uploadDir, f.StoragePath)
 			if !fileExists(diskPath) {
-				fmt.Printf("  [ERROR] 合并文件不存在: %s\n", diskPath)
-				return false
+				return failf("合并文件不存在: %s", diskPath)
 			}
 			diskStat, _ := os.Stat(diskPath)
-			fmt.Printf("  [OK] 合并文件存在: %s (磁盘 %d bytes, 记录 %d bytes)\n", diskPath, diskStat.Size(), f.FileSize)
-
 			if diskStat.Size() != f.FileSize {
-				fmt.Printf("  [ERROR] 合并文件大小不一致\n")
-				return false
+				return failf("合并文件大小不一致: 磁盘%d, 记录%d", diskStat.Size(), f.FileSize)
 			}
-			return true
+			return passf("合并完成, UploadStatus=Completed, 文件大小一致(%d bytes)", f.FileSize)
 		}
 	}
-	fmt.Println("  [ERROR] 未找到视频文件记录")
-	return false
+	return fail("未找到视频文件记录")
 }
 
-func testVideoUploadWithSyntheticData() bool {
+func testVideoUploadWithSyntheticData() testResult {
 	initResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/init", map[string]interface{}{
 		"FileName":  "synthetic_test.mp4",
 		"FileSize":  300,
 		"ChunkSize": 100,
 	})
-	if !checkSuccess(initResp, "初始化") {
-		return false
+	if initResp.ErrorCode != 0 {
+		return failf("初始化失败: ErrorCode=%d, ErrorMsg=%s", initResp.ErrorCode, initResp.ErrorMsg)
 	}
 
 	var initResult model.InitVideoUploadResp
 	json.Unmarshal(initResp.Data, &initResult)
-	fmt.Printf("  [INFO] UploadId: %s, 分片总数: %d\n", initResult.UploadId, initResult.ChunkCount)
 
 	for i := int32(0); i < initResult.ChunkCount; i++ {
 		chunkData := make([]byte, 100)
@@ -529,8 +482,7 @@ func testVideoUploadWithSyntheticData() bool {
 		}
 		chunkResp := doChunkUpload(apiPrefix+"/"+videoLibID+"/videos/chunk", initResult.UploadId, i, chunkData)
 		if chunkResp.ErrorCode != 0 {
-			fmt.Printf("  [ERROR] 分片 %d 失败: %s\n", i, chunkResp.ErrorMsg)
-			return false
+			return failf("分片%d失败: %s", i, chunkResp.ErrorMsg)
 		}
 		fmt.Printf("  [OK] 分片 %d/%d\n", i+1, initResult.ChunkCount)
 	}
@@ -538,8 +490,8 @@ func testVideoUploadWithSyntheticData() bool {
 	completeResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/complete", map[string]interface{}{
 		"UploadId": initResult.UploadId,
 	})
-	if !checkSuccess(completeResp, "完成上传") {
-		return false
+	if completeResp.ErrorCode != 0 {
+		return failf("完成上传失败: ErrorCode=%d, ErrorMsg=%s", completeResp.ErrorCode, completeResp.ErrorMsg)
 	}
 
 	fmt.Println("  [INFO] 等待异步合并...")
@@ -553,47 +505,32 @@ func testVideoUploadWithSyntheticData() bool {
 		if strings.HasPrefix(f.FileName, "synthetic_test") && f.UploadStatus == "Completed" {
 			diskPath := filepath.Join(uploadDir, f.StoragePath)
 			if !fileExists(diskPath) {
-				fmt.Printf("  [ERROR] 合并文件不存在: %s\n", diskPath)
-				return false
+				return failf("合并文件不存在: %s", diskPath)
 			}
 			diskStat, _ := os.Stat(diskPath)
-			fmt.Printf("  [OK] 合并文件存在: %s (%d bytes)\n", diskPath, diskStat.Size())
-			return true
+			return passf("合并完成, 文件大小=%d bytes", diskStat.Size())
 		}
 	}
-	fmt.Println("  [ERROR] 未找到合并完成的视频文件")
-	return false
+	return fail("未找到合并完成的视频文件")
 }
 
-func testVerifyNoChunkResidue() bool {
+func testVerifyNoChunkResidue() testResult {
 	chunkDirs := hasChunkDirs(uploadDir)
 	if len(chunkDirs) > 0 {
-		fmt.Printf("  [ERROR] 发现残留的 chunks 目录:\n")
-		for _, d := range chunkDirs {
-			fmt.Printf("         - %s\n", d)
-			// 列出其中的文件
-			filepath.Walk(d, func(path string, info os.FileInfo, err error) error {
-				if err == nil && !info.IsDir() {
-					fmt.Printf("           %s (%d bytes)\n", filepath.Base(path), info.Size())
-				}
-				return nil
-			})
-		}
-		return false
+		return failf("发现%d个残留chunks目录", len(chunkDirs))
 	}
-	fmt.Printf("  [OK] 没有残留的 chunks 目录，合并后清理正常\n")
-	return true
+	return pass("无chunks目录残留，合并后清理正常")
 }
 
-func testVideoResumableUpload() bool {
+func testVideoResumableUpload() testResult {
 	// 初始化
 	initResp1 := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/init", map[string]interface{}{
 		"FileName":  "resume_test.mp4",
 		"FileSize":  300,
 		"ChunkSize": 100,
 	})
-	if !checkSuccess(initResp1, "第一次初始化") {
-		return false
+	if initResp1.ErrorCode != 0 {
+		return failf("第一次初始化失败: ErrorCode=%d, ErrorMsg=%s", initResp1.ErrorCode, initResp1.ErrorMsg)
 	}
 
 	var init1 model.InitVideoUploadResp
@@ -603,18 +540,7 @@ func testVideoResumableUpload() bool {
 	chunkData := make([]byte, 100)
 	chunkResp := doChunkUpload(apiPrefix+"/"+videoLibID+"/videos/chunk", init1.UploadId, 0, chunkData)
 	if chunkResp.ErrorCode != 0 {
-		return false
-	}
-	fmt.Printf("  [INFO] 已上传分片 0/3\n")
-
-	// 验证分片文件存在于磁盘
-	chunkDir := filepath.Join(uploadDir, "videos", videoLibID, "chunks")
-	chunkFile := filepath.Join(chunkDir, "*.part.0")
-	matches, _ := filepath.Glob(chunkFile)
-	if len(matches) > 0 {
-		fmt.Printf("  [OK] 分片文件存在于磁盘: %s\n", matches[0])
-	} else {
-		fmt.Printf("  [WARN] 未找到分片文件（路径可能不同）\n")
+		return failf("上传分片失败: ErrorCode=%d", chunkResp.ErrorCode)
 	}
 
 	// 再次初始化 - 应返回相同 UploadId
@@ -623,30 +549,28 @@ func testVideoResumableUpload() bool {
 		"FileSize":  300,
 		"ChunkSize": 100,
 	})
-	if !checkSuccess(initResp2, "断点续传初始化") {
-		return false
+	if initResp2.ErrorCode != 0 {
+		return failf("断点续传初始化失败: ErrorCode=%d, ErrorMsg=%s", initResp2.ErrorCode, initResp2.ErrorMsg)
 	}
 
 	var init2 model.InitVideoUploadResp
 	json.Unmarshal(initResp2.Data, &init2)
 
-	if init1.UploadId == init2.UploadId {
-		fmt.Printf("  [OK] 断点续传: 返回相同 UploadId=%s\n", init1.UploadId)
-		return true
+	if init1.UploadId != init2.UploadId {
+		return failf("UploadId不一致: 第一次=%s, 第二次=%s", init1.UploadId, init2.UploadId)
 	}
-	fmt.Printf("  [ERROR] UploadId 不一致: %s vs %s\n", init1.UploadId, init2.UploadId)
-	return false
+	return passf("断点续传成功, 返回相同UploadId=%s", init1.UploadId)
 }
 
-func testVideoSameNameReject() bool {
+func testVideoSameNameReject() testResult {
 	// 完整上传
 	initResp := doJSON("POST", apiPrefix+"/"+videoLibID+"/videos/init", map[string]interface{}{
 		"FileName":  "same_name_test.mp4",
 		"FileSize":  100,
 		"ChunkSize": 100,
 	})
-	if !checkSuccess(initResp, "初始化上传") {
-		return false
+	if initResp.ErrorCode != 0 {
+		return failf("初始化上传失败: ErrorCode=%d, ErrorMsg=%s", initResp.ErrorCode, initResp.ErrorMsg)
 	}
 
 	var initResult model.InitVideoUploadResp
@@ -668,32 +592,30 @@ func testVideoSameNameReject() bool {
 		"ChunkSize": 100,
 	})
 
-	if reResp.ErrorCode != 0 {
-		fmt.Printf("  [OK] 同名文件被拒绝: ErrorCode=%d, ErrorMsg=%s\n", reResp.ErrorCode, reResp.ErrorMsg)
-		return true
+	if reResp.ErrorCode == 0 {
+		return fail("同名已完成文件未被拒绝，返回ErrorCode=0")
 	}
-	fmt.Println("  [ERROR] 同名已完成文件未被拒绝")
-	return false
+	return passf("同名文件被拒绝, ErrorCode=%d, ErrorMsg=%s", reResp.ErrorCode, reResp.ErrorMsg)
 }
 
 // ──────────────────────────── 异常场景 ────────────────────────────
 
-func testTypeMismatch() bool {
+func testTypeMismatch() testResult {
 	ok := true
+	var details []string
 
 	// 图片→视频库
 	imgFiles := findTestImages()
 	if len(imgFiles) > 0 {
 		imgResp := doMultipart(apiPrefix+"/"+videoLibID+"/images", imgFiles[:1])
-		// handleError 统一返回 ErrCodeServerInternal，通过 ErrorMsg 判断业务错误
 		if imgResp.ErrorCode != 0 && strings.Contains(imgResp.ErrorMsg, "类型不匹配") {
-			fmt.Printf("  [OK] 图片上传到视频库被拒绝: ErrorCode=%d, ErrorMsg=%s\n", imgResp.ErrorCode, imgResp.ErrorMsg)
+			details = append(details, "图片→视频库: 正确拒绝")
 		} else {
-			fmt.Printf("  [ERROR] 图片上传到视频库未被拒绝: ErrorCode=%d, ErrorMsg=%s\n", imgResp.ErrorCode, imgResp.ErrorMsg)
+			details = append(details, fmt.Sprintf("图片→视频库: 未被拒绝(ErrorCode=%d)", imgResp.ErrorCode))
 			ok = false
 		}
 	} else {
-		fmt.Println("  [SKIP] 没有测试图片")
+		details = append(details, "图片→视频库: 跳过(无测试图片)")
 	}
 
 	// 视频→图片库
@@ -703,11 +625,14 @@ func testTypeMismatch() bool {
 		"ChunkSize": 100,
 	})
 	if vidResp.ErrorCode != 0 && strings.Contains(vidResp.ErrorMsg, "类型不匹配") {
-		fmt.Printf("  [OK] 视频上传到图片库被拒绝: ErrorCode=%d, ErrorMsg=%s\n", vidResp.ErrorCode, vidResp.ErrorMsg)
+		details = append(details, "视频→图片库: 正确拒绝")
 	} else {
-		fmt.Printf("  [ERROR] 视频上传到图片库未被拒绝: ErrorCode=%d, ErrorMsg=%s\n", vidResp.ErrorCode, vidResp.ErrorMsg)
+		details = append(details, fmt.Sprintf("视频→图片库: 未被拒绝(ErrorCode=%d)", vidResp.ErrorCode))
 		ok = false
 	}
 
-	return ok
+	if !ok {
+		return failf("部分场景未被拒绝: %s", strings.Join(details, "; "))
+	}
+	return passf("两种类型不匹配场景均被拒绝: %s", strings.Join(details, "; "))
 }

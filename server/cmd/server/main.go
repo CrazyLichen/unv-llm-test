@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 
+	"llm-test-server/internal/common"
 	"llm-test-server/internal/config"
 	"llm-test-server/internal/controller"
 	"llm-test-server/internal/repository"
@@ -22,9 +24,17 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
+	// 初始化日志（在 DB 之前，日志初始化失败仍用标准 log）
+	if err := common.InitLogger(&cfg.Log); err != nil {
+		log.Fatalf("初始化日志失败: %v", err)
+	}
+
+	slog.Info("配置加载成功", "port", cfg.Server.Port, "mode", cfg.Server.Mode)
+
 	// 初始化数据库
 	db, err := repository.InitDB(&cfg.Database)
 	if err != nil {
+		slog.Error("初始化数据库失败", "error", err)
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
 	defer db.Close()
@@ -43,8 +53,9 @@ func main() {
 
 	// 启动服务
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	log.Printf("服务启动于 %s", addr)
+	slog.Info("服务启动", "addr", addr)
 	if err := r.Run(addr); err != nil {
+		slog.Error("服务启动失败", "error", err)
 		log.Fatalf("服务启动失败: %v", err)
 	}
 }

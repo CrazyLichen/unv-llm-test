@@ -9,3 +9,4 @@ database:
 log:
   level: info
   format: json
+  file: "./data/app.log"

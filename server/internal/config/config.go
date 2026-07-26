@@ -40,8 +40,10 @@ type DatabaseConfig struct {
 type LogConfig struct {
 	// Level 日志级别
 	Level string `yaml:"level"`
-	// Format 日志格式
+	// Format 日志格式（json/text）
 	Format string `yaml:"format"`
+	// File 日志文件路径，为空则仅输出到控制台
+	File string `yaml:"file"`
 }
 
 // ──────────────────────────── 导出函数 ────────────────────────────
@@ -77,6 +79,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Log.Format == "" {
 		cfg.Log.Format = "json"
 	}
+	if cfg.Log.File == "" {
+		cfg.Log.File = ""
+	}
 
 	// 环境变量覆盖
 	if v := os.Getenv("SERVER_PORT"); v != "" {
@@ -92,6 +97,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
+	}
+	if v := os.Getenv("LOG_FILE"); v != "" {
+		cfg.Log.File = v
 	}
 
 	return &cfg, nil

@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -35,6 +36,7 @@ func InitDB(cfg *config.DatabaseConfig) (*sql.DB, error) {
 		return nil, fmt.Errorf("创建数据表失败: %w", err)
 	}
 
+	slog.Info("数据库初始化成功", "driver", cfg.Driver, "dsn", cfg.DSN)
 	return db, nil
 }
 

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -27,8 +28,11 @@ func NewModelConfigController(svc *service.ModelConfigService) *ModelConfigContr
 
 // Create 创建模型配置
 func (ctrl *ModelConfigController) Create(c *gin.Context) {
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path)
+
 	var req model.CreateModelConfigReq
 	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "error", err.Error())
 		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
 		return
 	}
@@ -43,6 +47,8 @@ func (ctrl *ModelConfigController) Create(c *gin.Context) {
 
 // List 获取模型配置列表
 func (ctrl *ModelConfigController) List(c *gin.Context) {
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path)
+
 	// 按 ID 精确查询
 	if id := c.Query("Id"); id != "" {
 		mc, err := ctrl.svc.GetByID(c.Request.Context(), id)
@@ -86,9 +92,11 @@ func (ctrl *ModelConfigController) List(c *gin.Context) {
 // Update 更新模型配置
 func (ctrl *ModelConfigController) Update(c *gin.Context) {
 	id := c.Param("id")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id)
 
 	var req model.UpdateModelConfigReq
 	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Warn("参数校验失败", "path", c.Request.URL.Path, "id", id, "error", err.Error())
 		common.Fail(c, http.StatusBadRequest, common.ErrParamInvalid, "参数校验失败: "+err.Error())
 		return
 	}
@@ -104,6 +112,7 @@ func (ctrl *ModelConfigController) Update(c *gin.Context) {
 // Delete 删除模型配置
 func (ctrl *ModelConfigController) Delete(c *gin.Context) {
 	id := c.Param("id")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id)
 
 	if err := ctrl.svc.Delete(c.Request.Context(), id); err != nil {
 		handleError(c, err)
@@ -116,6 +125,7 @@ func (ctrl *ModelConfigController) Delete(c *gin.Context) {
 // Test 测试模型连通性
 func (ctrl *ModelConfigController) Test(c *gin.Context) {
 	id := c.Param("id")
+	slog.Info("收到请求", "method", c.Request.Method, "path", c.Request.URL.Path, "id", id)
 
 	result, err := ctrl.svc.TestConnectivity(c.Request.Context(), id)
 	if err != nil {
@@ -135,8 +145,10 @@ func handleError(c *gin.Context, err error) {
 		if appErr.Code >= 50000 {
 			httpStatus = http.StatusInternalServerError
 		}
+		slog.Error("请求处理失败", "errorCode", appErr.Code, "errorMsg", appErr.Msg, "path", c.Request.URL.Path)
 		common.Fail(c, httpStatus, appErr.Code, appErr.Msg)
 		return
 	}
+	slog.Error("请求处理未知错误", "error", err.Error(), "path", c.Request.URL.Path)
 	common.Fail(c, http.StatusInternalServerError, common.ErrModelCallFailed, err.Error())
 }

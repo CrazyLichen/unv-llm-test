@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"llm-test-server/internal/common"
 	"llm-test-server/internal/model"
@@ -31,8 +32,10 @@ func (r *ModelConfigRepo) Create(ctx context.Context, mc *model.ModelConfig) err
 		mc.Id, mc.ModelName, mc.ModelId, mc.ApiUrl, mc.ApiKey, mc.Temperature, mc.MaxTokens, mc.CreatedAt, mc.UpdatedAt,
 	)
 	if err != nil {
+		slog.Error("插入模型配置失败", "id", mc.Id, "error", err)
 		return fmt.Errorf("插入模型配置失败: %w", err)
 	}
+	slog.Info("插入模型配置成功", "id", mc.Id, "modelId", mc.ModelId)
 	return nil
 }
 
@@ -45,9 +48,11 @@ func (r *ModelConfigRepo) GetByID(ctx context.Context, id string) (*model.ModelC
 	var mc model.ModelConfig
 	err := row.Scan(&mc.Id, &mc.ModelName, &mc.ModelId, &mc.ApiUrl, &mc.ApiKey, &mc.Temperature, &mc.MaxTokens, &mc.CreatedAt, &mc.UpdatedAt)
 	if err == sql.ErrNoRows {
+		slog.Warn("模型配置不存在", "id", id)
 		return nil, nil
 	}
 	if err != nil {
+		slog.Error("按ID查询模型配置失败", "id", id, "error", err)
 		return nil, fmt.Errorf("按ID查询模型配置失败: %w", err)
 	}
 	return &mc, nil
@@ -58,6 +63,7 @@ func (r *ModelConfigRepo) List(ctx context.Context, page, pageSize int) ([]model
 	var total int
 	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_configs`).Scan(&total)
 	if err != nil {
+		slog.Error("统计模型配置数量失败", "error", err)
 		return nil, 0, fmt.Errorf("统计模型配置数量失败: %w", err)
 	}
 
@@ -66,6 +72,7 @@ func (r *ModelConfigRepo) List(ctx context.Context, page, pageSize int) ([]model
 		`SELECT id, model_name, model_id, api_url, api_key, temperature, max_tokens, created_at, updated_at
 		 FROM model_configs ORDER BY created_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
+		slog.Error("查询模型配置列表失败", "page", page, "pageSize", pageSize, "error", err)
 		return nil, 0, fmt.Errorf("查询模型配置列表失败: %w", err)
 	}
 	defer rows.Close()
@@ -74,10 +81,13 @@ func (r *ModelConfigRepo) List(ctx context.Context, page, pageSize int) ([]model
 	for rows.Next() {
 		var mc model.ModelConfig
 		if err := rows.Scan(&mc.Id, &mc.ModelName, &mc.ModelId, &mc.ApiUrl, &mc.ApiKey, &mc.Temperature, &mc.MaxTokens, &mc.CreatedAt, &mc.UpdatedAt); err != nil {
+			slog.Error("扫描模型配置记录失败", "error", err)
 			return nil, 0, fmt.Errorf("扫描模型配置记录失败: %w", err)
 		}
 		items = append(items, mc)
 	}
+
+	slog.Info("查询模型配置列表", "page", page, "pageSize", pageSize, "total", total, "count", len(items))
 	return items, total, nil
 }
 
@@ -113,6 +123,7 @@ func (r *ModelConfigRepo) Update(ctx context.Context, id string, req *model.Upda
 
 	// 无字段需要更新
 	if len(sets) == 0 {
+		slog.Warn("更新模型配置无字段变更", "id", id)
 		return nil
 	}
 
@@ -123,6 +134,7 @@ func (r *ModelConfigRepo) Update(ctx context.Context, id string, req *model.Upda
 	query := fmt.Sprintf("UPDATE model_configs SET %s WHERE id = ?", joinSets(sets))
 	result, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
+		slog.Error("更新模型配置失败", "id", id, "error", err)
 		return fmt.Errorf("更新模型配置失败: %w", err)
 	}
 
@@ -130,6 +142,8 @@ func (r *ModelConfigRepo) Update(ctx context.Context, id string, req *model.Upda
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
+
+	slog.Info("更新模型配置成功", "id", id, "fields", len(sets)-1)
 	return nil
 }
 
@@ -137,12 +151,14 @@ func (r *ModelConfigRepo) Update(ctx context.Context, id string, req *model.Upda
 func (r *ModelConfigRepo) Delete(ctx context.Context, id string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM model_configs WHERE id = ?`, id)
 	if err != nil {
+		slog.Error("删除模型配置失败", "id", id, "error", err)
 		return fmt.Errorf("删除模型配置失败: %w", err)
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
+	slog.Info("删除模型配置成功", "id", id)
 	return nil
 }
 

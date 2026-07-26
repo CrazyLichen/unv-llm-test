@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -66,7 +67,13 @@ func (s *ModelConfigService) Create(ctx context.Context, req *model.CreateModelC
 		UpdatedAt:   now,
 	}
 
-	return s.repo.Create(ctx, mc)
+	if err := s.repo.Create(ctx, mc); err != nil {
+		slog.Error("创建模型配置失败", "modelId", req.ModelId, "error", err)
+		return err
+	}
+
+	slog.Info("创建模型配置成功", "id", id, "modelId", req.ModelId, "modelName", req.ModelName)
+	return nil
 }
 
 // GetByID 按 ID 查询模型配置
@@ -106,7 +113,13 @@ func (s *ModelConfigService) Update(ctx context.Context, id string, req *model.U
 		return &AppError{Code: common.ErrModelConfigNotFound, Msg: "模型配置不存在"}
 	}
 
-	return s.repo.Update(ctx, id, req)
+	if err := s.repo.Update(ctx, id, req); err != nil {
+		slog.Error("更新模型配置失败", "id", id, "error", err)
+		return err
+	}
+
+	slog.Info("更新模型配置成功", "id", id)
+	return nil
 }
 
 // Delete 删除模型配置
@@ -126,10 +139,17 @@ func (s *ModelConfigService) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if hasRelated {
+		slog.Warn("删除模型配置被拒绝，存在关联任务", "id", id)
 		return &AppError{Code: common.ErrTaskStatusConflict, Msg: "该模型配置下存在关联任务，无法删除"}
 	}
 
-	return s.repo.Delete(ctx, id)
+	if err := s.repo.Delete(ctx, id); err != nil {
+		slog.Error("删除模型配置失败", "id", id, "error", err)
+		return err
+	}
+
+	slog.Info("删除模型配置成功", "id", id)
+	return nil
 }
 
 // TestConnectivity 测试模型连通性
@@ -148,6 +168,7 @@ func (s *ModelConfigService) TestConnectivity(ctx context.Context, id string) (*
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mc.ApiUrl, strings.NewReader(body))
 	if err != nil {
+		slog.Error("创建连通性测试请求失败", "id", id, "error", err)
 		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("创建请求失败: %s", err.Error())}
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -156,15 +177,18 @@ func (s *ModelConfigService) TestConnectivity(ctx context.Context, id string) (*
 	resp, err := http.DefaultClient.Do(req)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
+		slog.Error("模型连通性测试失败", "id", id, "modelId", mc.ModelId, "error", err)
 		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("连接失败: %s", err.Error())}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		slog.Error("模型连通性测试返回错误", "id", id, "modelId", mc.ModelId, "statusCode", resp.StatusCode, "latency", elapsed)
 		return nil, &AppError{Code: common.ErrModelCallFailed, Msg: fmt.Sprintf("模型返回错误(HTTP %d): %s", resp.StatusCode, string(respBody))}
 	}
 
+	slog.Info("模型连通性测试成功", "id", id, "modelId", mc.ModelId, "latency", elapsed)
 	return &model.TestModelConfigResp{Latency: int(elapsed)}, nil
 }
 
